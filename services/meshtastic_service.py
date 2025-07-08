@@ -17,7 +17,7 @@ class MeshtasticService(QObject):
 
     def _listen(self):
         # ✅ Only run this AFTER QApplication exists!
-        MeshtasticService.iface = meshtastic.serial_interface.SerialInterface(devPath="/dev/ttyUSB0")
+        MeshtasticService.iface = meshtastic.serial_interface.SerialInterface()
         pub.subscribe(self._on_receive, "meshtastic.receive")
 
         time.sleep(2)

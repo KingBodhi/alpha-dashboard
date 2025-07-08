@@ -3,6 +3,7 @@ import sys
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QListWidget, QScrollArea
 from app.widgets.block_tracker import BlockTracker
 from app.widgets.network_summary import NetworkSummary
+from app.widgets.bitcoin_summary import BitcoinSummary
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import QWebEngineSettings
 from PyQt6.QtCore import QUrl
@@ -35,6 +36,11 @@ class HomePage(QWidget):
         layout.addWidget(QLabel("Live Network Summary"))
         self.summary = NetworkSummary()
         layout.addWidget(self.summary)
+
+        # Bitcoin Summary
+        layout.addWidget(QLabel("Bitcoin Node Summary"))
+        self.bitcoin_summary = BitcoinSummary()
+        layout.addWidget(self.bitcoin_summary)
 
         # Map
         layout.addWidget(QLabel("Network Map"))

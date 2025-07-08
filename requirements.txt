@@ -1,0 +1,10 @@
+PyQt6
+PyQt6-WebEngine
+bit
+Pillow
+meshtastic
+requests
+qrcode
+uvicorn
+fastapi
+python-bitcoinrpc

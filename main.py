@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import QApplication
 
 # Import your PyQt Main Window
 from app.main_window import MainWindow
+import platform
 
 
 # ========= Paths =========
@@ -30,8 +31,25 @@ if hasattr(sys, '_MEIPASS'):
     base_path = sys._MEIPASS
 else:
     base_path = os.path.abspath(".")
+    
+system = platform.system().lower()
+machine = platform.machine().lower()
+    
+match (system, machine):
+    case ("linux", m) if "aarch64" in m or "arm64" in m:
+        binary_path= "cloudflared-linux-arm64"
+    case ("linux", m) if "armv7l" in m or "arm" in m:
+        binary_path= "cloudflared-linux-armhf"
+    case ("linux", m) if "x86_64" in m or "amd64" in m:
+        binary_path= "cloudflared-linux-amd64"
+    case ("darwin", m) if "arm64" in m:
+        binary_path= "cloudflared-darwin-arm64"
+    case ("darwin", m):
+        binary_path= "cloudflared-darwin-amd64"
+    case ("windows", _):
+        binary_path= "cloudflared-windows-amd64.exe"
 
-cloudflared_path = os.path.join(base_path, 'assets', 'cloudflared-linux-amd64')
+cloudflared_path = os.path.join(base_path, 'assets', binary_path)
 
 
 
