@@ -5,6 +5,7 @@ from PyQt6.QtCore import Qt, pyqtSlot
 from PyQt6.QtGui import QFont, QPalette
 import json
 from datetime import datetime
+from decimal import Decimal
 from app.config.bitcoin_config import UI_CONFIG
 
 
@@ -14,6 +15,18 @@ class BitcoinDashboard(QWidget):
     def __init__(self):
         super().__init__()
         self.init_ui()
+        
+    @staticmethod
+    def safe_float(value):
+        """Safely convert value to float, handling Decimal objects."""
+        if value is None:
+            return 0.0
+        if isinstance(value, Decimal):
+            return float(value)
+        try:
+            return float(value)
+        except (ValueError, TypeError):
+            return 0.0
         
     def init_ui(self):
         layout = QVBoxLayout()
@@ -189,26 +202,33 @@ class BitcoinDashboard(QWidget):
         self.best_hash_label.setText(info.get('bestblockhash', 'None'))
         
         difficulty = info.get('difficulty', 0)
-        if difficulty > 1e12:
-            difficulty_str = f"{difficulty/1e12:.2f}T"
-        elif difficulty > 1e9:
-            difficulty_str = f"{difficulty/1e9:.2f}B"
-        elif difficulty > 1e6:
-            difficulty_str = f"{difficulty/1e6:.2f}M"
+        # Convert Decimal to float for arithmetic operations
+        difficulty_float = self.safe_float(difficulty)
+        if difficulty_float > 1e12:
+            difficulty_str = f"{difficulty_float/1e12:.2f}T"
+        elif difficulty_float > 1e9:
+            difficulty_str = f"{difficulty_float/1e9:.2f}B"
+        elif difficulty_float > 1e6:
+            difficulty_str = f"{difficulty_float/1e6:.2f}M"
         else:
-            difficulty_str = f"{difficulty:,.0f}"
+            difficulty_str = f"{difficulty_float:,.0f}"
         self.difficulty_label.setText(difficulty_str)
         
-        verification_progress = info.get('verificationprogress', 0) * 100
-        self.verification_progress.setValue(int(verification_progress))
+        verification_progress = info.get('verificationprogress', 0)
+        # Convert to float and calculate percentage
+        progress_float = self.safe_float(verification_progress)
+        progress_percent = progress_float * 100
+        self.verification_progress.setValue(int(progress_percent))
         
         size_on_disk = info.get('size_on_disk', 0)
-        if size_on_disk > 1e9:
-            size_str = f"{size_on_disk/1e9:.2f} GB"
-        elif size_on_disk > 1e6:
-            size_str = f"{size_on_disk/1e6:.2f} MB"
+        # Convert to float for arithmetic operations
+        size_float = self.safe_float(size_on_disk)
+        if size_float > 1e9:
+            size_str = f"{size_float/1e9:.2f} GB"
+        elif size_float > 1e6:
+            size_str = f"{size_float/1e6:.2f} MB"
         else:
-            size_str = f"{size_on_disk:,} bytes"
+            size_str = f"{size_float:,} bytes"
         self.size_label.setText(size_str)
     
     @pyqtSlot(dict)
@@ -226,12 +246,13 @@ class BitcoinDashboard(QWidget):
         self.mempool_size_label.setText(f"{size:,} transactions")
         
         bytes_size = info.get('bytes', 0)
-        if bytes_size > 1e6:
-            bytes_str = f"{bytes_size/1e6:.2f} MB"
-        elif bytes_size > 1e3:
-            bytes_str = f"{bytes_size/1e3:.2f} KB"
+        bytes_float = self.safe_float(bytes_size)
+        if bytes_float > 1e6:
+            bytes_str = f"{bytes_float/1e6:.2f} MB"
+        elif bytes_float > 1e3:
+            bytes_str = f"{bytes_float/1e3:.2f} KB"
         else:
-            bytes_str = f"{bytes_size} bytes"
+            bytes_str = f"{bytes_float} bytes"
         self.mempool_bytes_label.setText(bytes_str)
     
     @pyqtSlot(dict)

@@ -1,6 +1,7 @@
 import json
 import threading
 import time
+from decimal import Decimal
 from PyQt6.QtCore import QObject, pyqtSignal, QTimer
 from bitcoinrpc.authproxy import AuthServiceProxy, JSONRPCException
 from app.config.bitcoin_config import BITCOIN_RPC_CONFIG, UI_CONFIG
@@ -132,7 +133,9 @@ class BitcoinService(QObject):
         except Exception as e:
             error_msg = f"Update failed: {str(e)}"
             print(f"❌ {error_msg}")
-            self.error_occurred.emit(error_msg)
+            # Don't emit error for Decimal conversion issues, just log them
+            if "Decimal" not in str(e):
+                self.error_occurred.emit(error_msg)
             # Try to reconnect on next update
             self.is_connected = False
     
