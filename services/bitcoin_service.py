@@ -30,6 +30,10 @@ class BitcoinService(QObject):
     error_occurred = pyqtSignal(str)            # Error messages
     status_message = pyqtSignal(str)            # Status updates
     
+    # Address-specific signals
+    address_balance_updated = pyqtSignal(str, dict)  # address, balance_info
+    address_transactions_updated = pyqtSignal(str, list)  # address, transactions
+    
     def __init__(self, rpc_user=None, rpc_password=None, 
                  rpc_host=None, rpc_port=None):
         super().__init__()
@@ -44,6 +48,11 @@ class BitcoinService(QObject):
         self.rpc_connection = None
         self.is_connected = False
         self.last_block_hash = None
+        
+        # Address monitoring
+        self.monitored_addresses = set()
+        self.address_balances = {}
+        self.address_transactions = {}
         
         # Adaptive settings based on system capabilities
         self.is_low_power_device = self._detect_low_power_device()
@@ -285,6 +294,9 @@ class BitcoinService(QObject):
                 )
                 if peer_info:
                     self.peer_info_updated.emit(peer_info)
+                
+                # Update monitored addresses
+                self.update_all_monitored_addresses()
             
         except Exception as e:
             self._handle_update_error(e)
@@ -408,3 +420,107 @@ class BitcoinService(QObject):
         except Exception as e:
             print(f"❌ Error executing {method}: {e}")
             return None
+
+    def add_address_to_monitor(self, address):
+        """Add a Bitcoin address to monitor for balance and transactions."""
+        if address and address not in self.monitored_addresses:
+            self.monitored_addresses.add(address)
+            self.address_balances[address] = Decimal('0')
+            self.address_transactions[address] = []
+            print(f"📍 Now monitoring address: {address}")
+            
+            # Update balance immediately if connected
+            if self.is_connected:
+                self.update_address_balance(address)
+    
+    def remove_address_from_monitor(self, address):
+        """Remove a Bitcoin address from monitoring."""
+        if address in self.monitored_addresses:
+            self.monitored_addresses.remove(address)
+            self.address_balances.pop(address, None)
+            self.address_transactions.pop(address, None)
+            print(f"📍 Stopped monitoring address: {address}")
+    
+    def update_address_balance(self, address):
+        """Update balance for a specific address."""
+        if not self.is_connected or not self.rpc_connection:
+            return
+            
+        try:
+            # Import address to wallet for monitoring (if not already imported)
+            try:
+                self.rpc_connection.importaddress(address, "", False)
+            except JSONRPCException as e:
+                # Address might already be imported or node might not support this
+                if "already exists" not in str(e).lower():
+                    print(f"⚠️ Could not import address {address}: {e}")
+            
+            # Get address balance using listunspent
+            unspent = self._safe_rpc_call(lambda: self.rpc_connection.listunspent(0, 9999999, [address]))
+            
+            if unspent is not None:
+                # Calculate total balance
+                balance = sum(Decimal(str(utxo['amount'])) for utxo in unspent)
+                self.address_balances[address] = balance
+                
+                # Get current Bitcoin price for USD conversion (placeholder)
+                btc_price_usd = self.get_btc_price_estimate()
+                balance_usd = float(balance) * btc_price_usd
+                
+                balance_info = {
+                    'balance_btc': balance,
+                    'balance_usd': balance_usd,
+                    'confirmed': balance,  # For now, treat all as confirmed
+                    'unconfirmed': Decimal('0'),
+                    'utxo_count': len(unspent),
+                    'last_updated': time.time()
+                }
+                
+                # Emit signal with balance update
+                self.address_balance_updated.emit(address, balance_info)
+                print(f"💰 Balance updated for {address}: {balance:.8f} BTC")
+                
+        except Exception as e:
+            print(f"❌ Error updating balance for {address}: {e}")
+    
+    def get_btc_price_estimate(self):
+        """Get Bitcoin price estimate (placeholder - would use real API)."""
+        # This is a placeholder. In a real implementation, you'd fetch from an API
+        return 45000.0  # Example BTC price in USD
+    
+    def update_address_transactions(self, address):
+        """Update transaction history for a specific address."""
+        if not self.is_connected or not self.rpc_connection:
+            return
+            
+        try:
+            # Get transactions for this address
+            # Note: This requires the address to be in the wallet or using a block explorer API
+            transactions = []
+            
+            # For now, we'll create placeholder transactions when balance changes
+            # In a full implementation, this would scan the blockchain or use an API
+            
+            if address in self.address_balances and self.address_balances[address] > 0:
+                # Create a placeholder transaction
+                placeholder_tx = {
+                    'txid': f'demo_tx_{address[:8]}',
+                    'amount': self.address_balances[address],
+                    'confirmations': 6,
+                    'time': int(time.time()),
+                    'type': 'receive',
+                    'address': address
+                }
+                transactions = [placeholder_tx]
+            
+            self.address_transactions[address] = transactions
+            self.address_transactions_updated.emit(address, transactions)
+            
+        except Exception as e:
+            print(f"❌ Error updating transactions for {address}: {e}")
+    
+    def update_all_monitored_addresses(self):
+        """Update all monitored addresses."""
+        for address in self.monitored_addresses:
+            self.update_address_balance(address)
+            self.update_address_transactions(address)

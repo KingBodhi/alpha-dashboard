@@ -83,9 +83,20 @@ class MainWindow(QMainWindow):
         self.bitcoin_service.connection_status_changed.connect(profile_wallet.update_connection_status)
         self.bitcoin_service.blockchain_info_updated.connect(profile_wallet.update_balance_from_blockchain)
         
-        # Connect Bitcoin service to transaction page
+        # Connect address-specific signals
+        self.bitcoin_service.address_balance_updated.connect(profile_wallet.update_address_balance)
+        self.bitcoin_service.address_transactions_updated.connect(profile_wallet.update_address_transactions)
+        
+        # Add the profile's Bitcoin address to monitoring
         bitcoin_address = self.profile_page.get_bitcoin_address()
+        if bitcoin_address:
+            self.bitcoin_service.add_address_to_monitor(bitcoin_address)
+        
+        # Connect Bitcoin service to transaction page
         self.transaction_page.set_wallet_address(bitcoin_address)
+        
+        # Set up wallet service reference for manual updates
+        profile_wallet.bitcoin_service = self.bitcoin_service
         
         # Connect Bitcoin service to home page summary
         self.bitcoin_service.connection_status_changed.connect(self.home_page.bitcoin_summary.update_connection_status)

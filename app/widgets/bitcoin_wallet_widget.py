@@ -109,6 +109,72 @@ class BitcoinWalletWidget(QWidget):
         
         # Update sync status
         self.sync_status_label.setText("🔄 Syncing...")
+    
+    @pyqtSlot(str, dict)
+    def update_address_balance(self, address, balance_info):
+        """Update balance for this specific address."""
+        if address != self.address:
+            return
+            
+        # Extract balance information
+        balance_btc = balance_info.get('balance_btc', Decimal('0'))
+        balance_usd = balance_info.get('balance_usd', 0.0)
+        utxo_count = balance_info.get('utxo_count', 0)
+        
+        # Update display
+        self.balance = balance_btc
+        self.balance_label.setText(f"{balance_btc:.8f} BTC")
+        
+        if balance_usd > 0:
+            self.balance_usd_label.setText(f"≈ ${balance_usd:.2f} USD")
+        else:
+            self.balance_usd_label.setText("≈ $0.00 USD")
+        
+        # Update sync status
+        if utxo_count > 0:
+            self.sync_status_label.setText(f"🟢 Synced ({utxo_count} UTXOs)")
+            self.sync_status_label.setStyleSheet("color: green; font-weight: bold;")
+        else:
+            self.sync_status_label.setText("🟢 Synced (no UTXOs)")
+            self.sync_status_label.setStyleSheet("color: green;")
+    
+    @pyqtSlot(str, list)
+    def update_address_transactions(self, address, transactions):
+        """Update transactions for this specific address."""
+        if address != self.address:
+            return
+            
+        # Clear existing transactions
+        self.transaction_list.clear()
+        
+        # Add new transactions
+        for tx in transactions:
+            tx_type = "📤 Sent" if tx.get('type') == 'sent' else "📥 Received"
+            amount = tx.get('amount', 0)
+            confirmations = tx.get('confirmations', 0)
+            
+            # Format timestamp
+            timestamp = tx.get('time', 0)
+            if timestamp:
+                from datetime import datetime
+                dt = datetime.fromtimestamp(timestamp)
+                time_str = dt.strftime('%m/%d %H:%M')
+            else:
+                time_str = 'Unknown'
+            
+            # Status indicator
+            if confirmations >= 6:
+                status = "✅"
+            elif confirmations > 0:
+                status = f"⏳{confirmations}"
+            else:
+                status = "⚠️"
+            
+            item_text = f"{status} {tx_type} {amount:.8f} BTC - {time_str}"
+            item = QListWidgetItem(item_text)
+            item.setData(Qt.ItemDataRole.UserRole, tx)
+            
+            self.transaction_list.addItem(item)
         
     def update_balance(self, balance_btc, balance_usd=None):
         """Manually update balance (for testing or external updates)."""
@@ -149,6 +215,10 @@ class BitcoinWalletWidget(QWidget):
         # This will be connected to the Bitcoin service in the main window
         self.sync_status_label.setText("🔄 Updating...")
         self.sync_status_label.setStyleSheet("color: blue; font-style: italic;")
+        
+        # Emit a signal that can be connected to the Bitcoin service
+        if hasattr(self, 'bitcoin_service'):
+            self.bitcoin_service.update_address_balance(self.address)
         
     def get_balance(self):
         """Get current balance as Decimal."""
