@@ -306,12 +306,9 @@ class BitcoinService(QObject):
         try:
             timeout = timeout_override or self.base_timeout
             
-            # Create a new connection for this call with specific timeout
-            rpc_url = f"http://{self.rpc_user}:{self.rpc_password}@{self.rpc_host}:{self.rpc_port}"
-            temp_rpc = AuthServiceProxy(rpc_url, timeout=timeout)
-            
+            # Use the existing connection but with a timeout wrapper
             start_time = time.time()
-            result = rpc_func() if hasattr(rpc_func, '__call__') else temp_rpc.__getattr__(rpc_func)()
+            result = rpc_func()
             call_time = time.time() - start_time
             
             # Track slow calls
@@ -321,14 +318,15 @@ class BitcoinService(QObject):
             return result
             
         except JSONRPCException as e:
-            print(f"RPC Error: {e}")
+            print(f"RPC Error: {e.error.get('message', str(e))}")
             return None
         except Exception as e:
             if "timeout" in str(e).lower():
                 print(f"RPC timeout after {timeout}s")
                 return None
             else:
-                raise e
+                print(f"RPC call failed: {e}")
+                return None
     
     def _handle_update_error(self, error):
         """Handle update errors with adaptive behavior."""

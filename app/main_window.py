@@ -61,8 +61,7 @@ class MainWindow(QMainWindow):
     def start_service(self):
         """Call this AFTER the window is shown to avoid QWidget initialization errors."""
         self.service.start()
-        # Auto-start Bitcoin monitoring
-        self.bitcoin_service.start_monitoring()
+        # Note: Bitcoin monitoring is not auto-started - user must click Connect button
 
     def setup_bitcoin_connections(self):
         """Setup connections between Bitcoin service and UI."""
