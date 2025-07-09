@@ -106,27 +106,34 @@ class BitcoinService(QObject):
     def _detect_low_power_device(self):
         """Detect if running on a low-power device like Raspberry Pi."""
         try:
-            # Check if it's a Raspberry Pi
-            if os.path.exists('/proc/cpuinfo'):
-                with open('/proc/cpuinfo', 'r') as f:
-                    cpuinfo = f.read().lower()
-                    if 'raspberry pi' in cpuinfo or 'bcm' in cpuinfo:
-                        return True
-            
-            # Check ARM architecture (common on low-power devices)
+            # Quick check for ARM architecture first (fastest)
             machine = platform.machine().lower()
             if 'arm' in machine or 'aarch64' in machine:
                 return True
             
-            # Check available memory if psutil is available
+            # Quick memory check if psutil is available
             if HAS_PSUTIL:
-                memory_gb = psutil.virtual_memory().total / (1024**3)
-                if memory_gb < 4:  # Less than 4GB RAM
-                    return True
+                try:
+                    memory_gb = psutil.virtual_memory().total / (1024**3)
+                    if memory_gb < 4:  # Less than 4GB RAM
+                        return True
+                except:
+                    pass
+            
+            # Only check /proc/cpuinfo if the above didn't detect low power
+            if os.path.exists('/proc/cpuinfo'):
+                try:
+                    with open('/proc/cpuinfo', 'r') as f:
+                        cpuinfo = f.read(1024).lower()  # Only read first 1KB
+                        if 'raspberry pi' in cpuinfo or 'bcm' in cpuinfo:
+                            return True
+                except:
+                    pass
             
             return False
             
         except Exception:
+            # If any detection fails, assume standard device
             return False
     
     def _check_system_resources(self):

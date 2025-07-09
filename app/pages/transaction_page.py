@@ -4,7 +4,7 @@ from PyQt6.QtWidgets import (
     QListWidget, QListWidgetItem, QSplitter, QTabWidget, QScrollArea,
     QMessageBox, QProgressBar, QCheckBox
 )
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 from PyQt6.QtGui import QFont, QTextCursor
 import json
 from datetime import datetime
@@ -29,14 +29,22 @@ class TransactionPage(QWidget):
         """Set the Bitcoin service for blockchain integration."""
         self.bitcoin_service = bitcoin_service
         if self.bitcoin_service:
+            # Use queued connections to prevent blocking
+            from PyQt6.QtCore import Qt
+            
             # Connect to balance updates
-            self.bitcoin_service.address_balance_updated.connect(self.update_wallet_balance)
-            # Connect to transaction updates
-            self.bitcoin_service.address_transactions_updated.connect(self.update_transaction_history_from_blockchain)
+            self.bitcoin_service.address_balance_updated.connect(
+                self.update_wallet_balance, Qt.ConnectionType.QueuedConnection)
+            # Connect to transaction updates  
+            self.bitcoin_service.address_transactions_updated.connect(
+                self.update_transaction_history_from_blockchain, Qt.ConnectionType.QueuedConnection)
             # Connect to transaction creation signals
-            self.bitcoin_service.transaction_created.connect(self.on_transaction_created)
-            self.bitcoin_service.transaction_broadcasted.connect(self.on_transaction_broadcast)
-            self.bitcoin_service.transaction_error.connect(self.on_transaction_error)
+            self.bitcoin_service.transaction_created.connect(
+                self.on_transaction_created, Qt.ConnectionType.QueuedConnection)
+            self.bitcoin_service.transaction_broadcasted.connect(
+                self.on_transaction_broadcast, Qt.ConnectionType.QueuedConnection)
+            self.bitcoin_service.transaction_error.connect(
+                self.on_transaction_error, Qt.ConnectionType.QueuedConnection)
             print("✅ Transaction page connected to Bitcoin service")
     
     def set_wallet_address(self, address, private_key_wif=None):
@@ -44,7 +52,10 @@ class TransactionPage(QWidget):
         self.wallet_address = address
         self.private_key_wif = private_key_wif
         if address:
-            # Update the receive address display
+            # Store address for later use when receive tab is created
+            self._pending_address = address
+            
+            # Update the receive address display if it exists
             if hasattr(self, 'receive_address_label'):
                 self.receive_address_label.setText(address)
             print(f"📍 Transaction page using address: {address[:8]}...")
@@ -67,7 +78,7 @@ class TransactionPage(QWidget):
             print(f"📋 Updated transaction history: {len(transactions)} transactions")
     
     def init_ui(self):
-        """Initialize the transaction page UI."""
+        """Initialize the transaction page UI with deferred loading."""
         main_layout = QVBoxLayout()
         self.setLayout(main_layout)
         
@@ -77,24 +88,34 @@ class TransactionPage(QWidget):
         main_layout.addWidget(title)
         
         # Create tabs for different transaction functions
-        tabs = QTabWidget()
-        main_layout.addWidget(tabs)
+        self.tabs = QTabWidget()
+        main_layout.addWidget(self.tabs)
         
+        # Create tabs with deferred content loading to improve startup speed
+        QTimer.singleShot(0, self._create_tabs_deferred)
+    
+    def _create_tabs_deferred(self):
+        """Create tab content in a deferred manner to prevent blocking."""
         # Send transaction tab
         self.send_tab = self.create_send_tab()
-        tabs.addTab(self.send_tab, "Send Bitcoin")
+        self.tabs.addTab(self.send_tab, "Send Bitcoin")
         
+        # Defer creation of other tabs
+        QTimer.singleShot(50, self._create_remaining_tabs)
+    
+    def _create_remaining_tabs(self):
+        """Create remaining tabs after initial UI is loaded."""
         # Receive tab
         self.receive_tab = self.create_receive_tab()
-        tabs.addTab(self.receive_tab, "Receive Bitcoin")
+        self.tabs.addTab(self.receive_tab, "Receive Bitcoin")
         
         # Transaction history tab
         self.history_tab = self.create_history_tab()
-        tabs.addTab(self.history_tab, "Transaction History")
+        self.tabs.addTab(self.history_tab, "Transaction History")
         
         # Transaction builder tab (advanced)
         self.builder_tab = self.create_builder_tab()
-        tabs.addTab(self.builder_tab, "Advanced Builder")
+        self.tabs.addTab(self.builder_tab, "Advanced Builder")
         
     def create_send_tab(self):
         """Create the send Bitcoin tab."""
@@ -233,6 +254,10 @@ class TransactionPage(QWidget):
         self.receive_address_label.setStyleSheet("font-family: monospace; font-size: 14px; padding: 10px; background: #f5f5f5; border: 1px solid #ddd;")
         self.receive_address_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         address_layout.addWidget(self.receive_address_label)
+        
+        # Use pending address if available
+        if hasattr(self, '_pending_address') and self._pending_address:
+            self.receive_address_label.setText(self._pending_address)
         
         # Copy button
         self.copy_address_button = QPushButton("Copy Address")
@@ -566,10 +591,15 @@ Note: This is a preview only. No transaction has been created yet."""
     
     def load_transaction_history(self):
         """Load transaction history into the list."""
+        # Use a timer to defer this operation and prevent blocking
+        QTimer.singleShot(0, self._load_transaction_history_deferred)
+    
+    def _load_transaction_history_deferred(self):
+        """Deferred transaction history loading."""
         self.transaction_list.clear()
         
         for tx in self.transaction_history:
-            status_icon = "⏳" if tx["status"] == "pending" else "✅" if tx["status"] == "confirmed" else "❌"
+            status_icon = "⏳" if tx.get("status") == "pending" else "✅" if tx.get("status") == "confirmed" else "❌"
             type_icon = "📤" if "recipient" in tx else "📥"
             
             item_text = f"{status_icon} {type_icon} {tx.get('amount', 0):.8f} BTC - {tx.get('description', 'No description')}"

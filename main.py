@@ -164,18 +164,17 @@ def main():
     # Fix for QWebEngineView!
     QApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
 
-    # Start FastAPI Server
-    start_fastapi_server()
-
-    # Auto-register with peers in background
-    threading.Thread(target=auto_register_with_peers, daemon=True).start()
-
-    # Start PyQt UI
+    # Start PyQt UI first for responsive startup
     app = QApplication(sys.argv)
     window = MainWindow()
     window.show()
-    window.start_service()
-    start_cloudflared_and_show_url(window, cloudflared_path)
+    
+    # Defer heavy operations to prevent blocking UI
+    QTimer.singleShot(100, lambda: start_fastapi_server())
+    QTimer.singleShot(200, lambda: threading.Thread(target=auto_register_with_peers, daemon=True).start())
+    QTimer.singleShot(500, window.start_service)
+    QTimer.singleShot(1000, lambda: start_cloudflared_and_show_url(window, cloudflared_path))
+    
     sys.exit(app.exec())
 
 

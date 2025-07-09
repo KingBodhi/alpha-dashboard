@@ -1,4 +1,4 @@
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import QMainWindow, QDockWidget, QListWidget, QStackedWidget
 from app.pages.home_page import HomePage
 from app.pages.apn_page import APNPage
@@ -60,48 +60,71 @@ class MainWindow(QMainWindow):
 
     def start_service(self):
         """Call this AFTER the window is shown to avoid QWidget initialization errors."""
+        # Start Meshtastic service first (fast)
         self.service.start()
+        
+        # Delay Bitcoin service initialization to avoid blocking UI
+        QTimer.singleShot(1000, self._delayed_bitcoin_setup)
+        
+    def _delayed_bitcoin_setup(self):
+        """Initialize Bitcoin service connections after UI is fully loaded."""
         # Note: Bitcoin monitoring is not auto-started - user must click Connect button
+        print("🔧 Bitcoin service ready for connections")
 
     def setup_bitcoin_connections(self):
         """Setup connections between Bitcoin service and UI."""
         dashboard = self.bitcoin_page.get_dashboard()
         
+        # Use queued connections to prevent blocking UI thread
+        from PyQt6.QtCore import Qt
+        
         # Connect Bitcoin service signals to dashboard slots
-        self.bitcoin_service.connection_status_changed.connect(dashboard.update_connection_status)
-        self.bitcoin_service.blockchain_info_updated.connect(dashboard.update_blockchain_info)
-        self.bitcoin_service.network_info_updated.connect(dashboard.update_network_info)
-        self.bitcoin_service.mempool_updated.connect(dashboard.update_mempool_info)
-        self.bitcoin_service.new_block_received.connect(dashboard.add_new_block)
-        self.bitcoin_service.peer_info_updated.connect(dashboard.update_peers_info)
-        self.bitcoin_service.status_message.connect(dashboard.update_status_message)
-        self.bitcoin_service.error_occurred.connect(dashboard.show_error_message)
+        self.bitcoin_service.connection_status_changed.connect(
+            dashboard.update_connection_status, Qt.ConnectionType.QueuedConnection)
+        self.bitcoin_service.blockchain_info_updated.connect(
+            dashboard.update_blockchain_info, Qt.ConnectionType.QueuedConnection)
+        self.bitcoin_service.network_info_updated.connect(
+            dashboard.update_network_info, Qt.ConnectionType.QueuedConnection)
+        self.bitcoin_service.mempool_updated.connect(
+            dashboard.update_mempool_info, Qt.ConnectionType.QueuedConnection)
+        self.bitcoin_service.new_block_received.connect(
+            dashboard.add_new_block, Qt.ConnectionType.QueuedConnection)
+        self.bitcoin_service.peer_info_updated.connect(
+            dashboard.update_peers_info, Qt.ConnectionType.QueuedConnection)
+        self.bitcoin_service.status_message.connect(
+            dashboard.update_status_message, Qt.ConnectionType.QueuedConnection)
+        self.bitcoin_service.error_occurred.connect(
+            dashboard.show_error_message, Qt.ConnectionType.QueuedConnection)
         
         # Connect Bitcoin service to profile page wallet widget
         profile_wallet = self.profile_page.get_bitcoin_wallet()
-        self.bitcoin_service.connection_status_changed.connect(profile_wallet.update_connection_status)
-        self.bitcoin_service.blockchain_info_updated.connect(profile_wallet.update_balance_from_blockchain)
+        self.bitcoin_service.connection_status_changed.connect(
+            profile_wallet.update_connection_status, Qt.ConnectionType.QueuedConnection)
+        self.bitcoin_service.blockchain_info_updated.connect(
+            profile_wallet.update_balance_from_blockchain, Qt.ConnectionType.QueuedConnection)
         
         # Connect address-specific signals
-        self.bitcoin_service.address_balance_updated.connect(profile_wallet.update_address_balance)
-        self.bitcoin_service.address_transactions_updated.connect(profile_wallet.update_address_transactions)
-        
-        # Add the profile's Bitcoin address to monitoring
-        bitcoin_address = self.profile_page.get_bitcoin_address()
-        if bitcoin_address:
-            self.bitcoin_service.add_address_to_monitor(bitcoin_address)
+        self.bitcoin_service.address_balance_updated.connect(
+            profile_wallet.update_address_balance, Qt.ConnectionType.QueuedConnection)
+        self.bitcoin_service.address_transactions_updated.connect(
+            profile_wallet.update_address_transactions, Qt.ConnectionType.QueuedConnection)
         
         # Connect Bitcoin service to transaction page
         self.transaction_page.set_bitcoin_service(self.bitcoin_service)
-        self.transaction_page.set_wallet_address(bitcoin_address)
+        
+        # Defer address operations to prevent blocking during startup
+        QTimer.singleShot(100, self._setup_bitcoin_addresses)
         
         # Set up wallet service reference for manual updates
         profile_wallet.bitcoin_service = self.bitcoin_service
         
         # Connect Bitcoin service to home page summary
-        self.bitcoin_service.connection_status_changed.connect(self.home_page.bitcoin_summary.update_connection_status)
-        self.bitcoin_service.blockchain_info_updated.connect(self.home_page.bitcoin_summary.update_blockchain_info)
-        self.bitcoin_service.network_info_updated.connect(self.home_page.bitcoin_summary.update_network_info)
+        self.bitcoin_service.connection_status_changed.connect(
+            self.home_page.bitcoin_summary.update_connection_status, Qt.ConnectionType.QueuedConnection)
+        self.bitcoin_service.blockchain_info_updated.connect(
+            self.home_page.bitcoin_summary.update_blockchain_info, Qt.ConnectionType.QueuedConnection)
+        self.bitcoin_service.network_info_updated.connect(
+            self.home_page.bitcoin_summary.update_network_info, Qt.ConnectionType.QueuedConnection)
         
         # Connect dashboard button to service
         dashboard.connect_button.clicked.connect(self.toggle_bitcoin_connection)
@@ -109,6 +132,18 @@ class MainWindow(QMainWindow):
         
         # Connect error signals
         self.bitcoin_service.error_occurred.connect(self.show_bitcoin_error)
+    
+    def _setup_bitcoin_addresses(self):
+        """Setup Bitcoin addresses after UI initialization to prevent blocking."""
+        try:
+            # Get the profile's Bitcoin address (may involve crypto operations)
+            bitcoin_address = self.profile_page.get_bitcoin_address()
+            if bitcoin_address:
+                self.bitcoin_service.add_address_to_monitor(bitcoin_address)
+                self.transaction_page.set_wallet_address(bitcoin_address)
+                print(f"✅ Bitcoin address monitoring configured: {bitcoin_address[:8]}...")
+        except Exception as e:
+            print(f"⚠️ Failed to setup Bitcoin address: {e}")
     
     def toggle_bitcoin_connection(self):
         """Toggle Bitcoin node connection."""
