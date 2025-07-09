@@ -2,6 +2,7 @@ import os
 import json
 from pathlib import Path
 from app.pages import globals
+from app.widgets.bitcoin_wallet_widget import BitcoinWalletWidget
 # ====================================================
 # GLOBAL PATCH: Ensures RIPEMD160 is supported even
 # if the system OpenSSL lacks it.
@@ -76,6 +77,10 @@ class ProfilePage(QWidget):
         self.address_label = QLabel("Bitcoin Address: (loading...)")
         self.address_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.layout.addWidget(self.address_label)
+
+        # Bitcoin wallet widget for blockchain sync
+        self.bitcoin_wallet = BitcoinWalletWidget()
+        self.layout.addWidget(self.bitcoin_wallet)
 
         self.qr_label = QLabel()
         self.layout.addWidget(self.qr_label, alignment=Qt.AlignmentFlag.AlignHCenter)
@@ -155,6 +160,7 @@ class ProfilePage(QWidget):
         self.devices = data.get("devices", [])
 
         self.address_label.setText(f"Bitcoin Address:\n{self.address}")
+        self.bitcoin_wallet.set_address(self.address)
         self.generate_qr_code(self.address)
         self.refresh_device_list()
 
@@ -279,3 +285,11 @@ class ProfilePage(QWidget):
                 "notes": notes_input.toPlainText().strip()
             }
         return None
+
+    def get_bitcoin_wallet(self):
+        """Get reference to the Bitcoin wallet widget for service integration."""
+        return self.bitcoin_wallet
+    
+    def get_bitcoin_address(self):
+        """Get the current Bitcoin address."""
+        return self.address

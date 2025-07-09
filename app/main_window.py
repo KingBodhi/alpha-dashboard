@@ -7,6 +7,7 @@ from app.pages.map_page import MapPage
 from app.pages.nodes_page import NodesPage
 from app.pages.profile_page import ProfilePage
 from app.pages.bitcoin_page import BitcoinPage
+from app.pages.transaction_page import TransactionPage
 from services.meshtastic_service import MeshtasticService
 from services.bitcoin_service import BitcoinService
 
@@ -20,7 +21,7 @@ class MainWindow(QMainWindow):
         self.drawer = QDockWidget("Menu", self)
         self.drawer.setFeatures(QDockWidget.DockWidgetFeature.NoDockWidgetFeatures)
         self.drawer_list = QListWidget()
-        self.drawer_list.addItems(["Home", "APN", "Chat", "Map", "Nodes", "Profile", "Bitcoin"])
+        self.drawer_list.addItems(["Home", "APN", "Chat", "Map", "Nodes", "Profile", "Bitcoin", "Transactions"])
         self.drawer_list.currentRowChanged.connect(self.navigate)
         self.drawer.setWidget(self.drawer_list)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.drawer)
@@ -36,6 +37,7 @@ class MainWindow(QMainWindow):
         self.nodes_page = NodesPage()
         self.profile_page = ProfilePage()
         self.bitcoin_page = BitcoinPage()
+        self.transaction_page = TransactionPage()
 
         self.stack.addWidget(self.home_page)
         self.stack.addWidget(self.apn_page)
@@ -44,6 +46,7 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.nodes_page)
         self.stack.addWidget(self.profile_page)
         self.stack.addWidget(self.bitcoin_page)
+        self.stack.addWidget(self.transaction_page)
 
 
         # Meshtastic Service
@@ -74,6 +77,15 @@ class MainWindow(QMainWindow):
         self.bitcoin_service.peer_info_updated.connect(dashboard.update_peers_info)
         self.bitcoin_service.status_message.connect(dashboard.update_status_message)
         self.bitcoin_service.error_occurred.connect(dashboard.show_error_message)
+        
+        # Connect Bitcoin service to profile page wallet widget
+        profile_wallet = self.profile_page.get_bitcoin_wallet()
+        self.bitcoin_service.connection_status_changed.connect(profile_wallet.update_connection_status)
+        self.bitcoin_service.blockchain_info_updated.connect(profile_wallet.update_balance_from_blockchain)
+        
+        # Connect Bitcoin service to transaction page
+        bitcoin_address = self.profile_page.get_bitcoin_address()
+        self.transaction_page.set_wallet_address(bitcoin_address)
         
         # Connect Bitcoin service to home page summary
         self.bitcoin_service.connection_status_changed.connect(self.home_page.bitcoin_summary.update_connection_status)
