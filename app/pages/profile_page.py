@@ -3,38 +3,10 @@ import json
 from pathlib import Path
 from app.pages import globals
 from app.widgets.bitcoin_wallet_widget import BitcoinWalletWidget
+from app.utils.bitcoin_address_generator import BitcoinAddressGenerator
 # ====================================================
-# GLOBAL PATCH: Ensures RIPEMD160 is supported even
-# if the system OpenSSL lacks it.
+# Bitcoin address generation utility handles all crypto
 # ====================================================
-import hashlib
-
-_original_hashlib_new = hashlib.new
-
-def patched_hashlib_new(name, data=b'', **kwargs):
-    if name.lower() == 'ripemd160':
-        try:
-            # Try system first
-            return _original_hashlib_new(name, data, **kwargs)
-        except (ValueError, TypeError):
-            try:
-                from Crypto.Hash import RIPEMD160
-            except ImportError as e:
-                raise RuntimeError(
-                    "Your system lacks ripemd160 in OpenSSL and pycryptodome is not installed.\n"
-                    "Fix with:\n\n    pip install pycryptodome"
-                ) from e
-            h = RIPEMD160.new()
-            h.update(data)
-            return h
-    return _original_hashlib_new(name, data, **kwargs)
-
-hashlib.new = patched_hashlib_new
-
-# ====================================================
-# Safe to import bit now
-# ====================================================
-from bit import Key
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QLineEdit, QPushButton, QMessageBox,
@@ -77,6 +49,16 @@ class ProfilePage(QWidget):
         self.address_label = QLabel("Bitcoin Address: (loading...)")
         self.address_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.layout.addWidget(self.address_label)
+
+        # Address type selector
+        address_type_layout = QHBoxLayout()
+        address_type_layout.addWidget(QLabel("Address Type:"))
+        self.address_type_combo = QComboBox()
+        self.address_type_combo.addItems(["Segwit (bech32)", "Legacy (P2PKH)", "P2SH-wrapped Segwit"])
+        self.address_type_combo.currentTextChanged.connect(self.on_address_type_changed)
+        address_type_layout.addWidget(self.address_type_combo)
+        address_type_layout.addStretch()
+        self.layout.addLayout(address_type_layout)
 
         # Bitcoin wallet widget for blockchain sync
         self.bitcoin_wallet = BitcoinWalletWidget()
@@ -142,10 +124,14 @@ class ProfilePage(QWidget):
             with open(PROFILE_PATH, "r") as f:
                 data = json.load(f)
         else:
-            key = Key()
+            # Generate new key with native segwit as default
+            generator = BitcoinAddressGenerator()
+            
             data = {
-                "private_key": key.to_wif(),
-                "address": key.address,
+                "private_key": generator.private_key_wif,
+                "address": generator.get_native_segwit_address(),  # Use native segwit as primary
+                "legacy_address": generator.get_legacy_address(),  # Keep legacy for compatibility
+                "p2sh_segwit_address": generator.get_p2sh_segwit_address(),  # Keep P2SH for compatibility
                 "nickname": "AlphaNode",
                 "role": "Standard",
                 "devices": []
@@ -155,12 +141,44 @@ class ProfilePage(QWidget):
 
         self.private_key = data["private_key"]
         self.address = data["address"]
+        
+        # Migration: If old profile doesn't have native segwit, generate it
+        if not self.address.startswith('bc1') and not self.address.startswith('tb1'):
+            print(f"🔄 Migrating profile from address {self.address} to native segwit")
+            try:
+                generator = BitcoinAddressGenerator(self.private_key)
+                native_segwit_address = generator.get_native_segwit_address()
+                
+                # Update the data with native segwit address
+                data["address"] = native_segwit_address
+                data["legacy_address"] = generator.get_legacy_address()
+                data["p2sh_segwit_address"] = generator.get_p2sh_segwit_address()
+                
+                # Save the updated profile
+                with open(PROFILE_PATH, "w") as f:
+                    json.dump(data, f, indent=4)
+                
+                self.address = native_segwit_address
+                print(f"✅ Profile migrated to native segwit address: {native_segwit_address}")
+                
+            except Exception as e:
+                print(f"⚠️ Could not migrate to native segwit address: {e}")
+        
         self.nickname_input.setText(data.get("nickname", ""))
         self.role_select.setCurrentText(data.get("role", "Standard"))
         self.devices = data.get("devices", [])
 
         self.address_label.setText(f"Bitcoin Address:\n{self.address}")
         self.bitcoin_wallet.set_address(self.address)
+        
+        # Set the address type combo based on current address
+        if self.address.startswith('bc1') or self.address.startswith('tb1'):
+            self.address_type_combo.setCurrentText("Segwit (bech32)")
+        elif self.address.startswith('3') or self.address.startswith('2'):
+            self.address_type_combo.setCurrentText("P2SH-wrapped Segwit")
+        else:
+            self.address_type_combo.setCurrentText("Legacy (P2PKH)")
+        
         self.generate_qr_code(self.address)
         self.refresh_device_list()
 
@@ -293,3 +311,33 @@ class ProfilePage(QWidget):
     def get_bitcoin_address(self):
         """Get the current Bitcoin address."""
         return self.address
+
+    def on_address_type_changed(self, address_type):
+        """Handle address type change."""
+        if not hasattr(self, 'private_key') or not self.private_key:
+            return
+            
+        try:
+            generator = BitcoinAddressGenerator(self.private_key)
+            
+            if address_type.startswith("Segwit"):
+                new_address = generator.get_native_segwit_address()
+            elif address_type.startswith("P2SH"):
+                new_address = generator.get_p2sh_segwit_address()
+            else:  # Legacy
+                new_address = generator.get_legacy_address()
+            
+            if new_address != self.address:
+                self.address = new_address
+                self.address_label.setText(f"Bitcoin Address:\n{self.address}")
+                self.bitcoin_wallet.set_address(self.address)
+                self.generate_qr_code(self.address)
+                
+                print(f"🔄 Address type changed to {address_type}: {self.address}")
+                
+                # Save the updated profile
+                self.save_profile()
+                
+        except Exception as e:
+            print(f"❌ Error changing address type: {e}")
+            QMessageBox.warning(self, "Error", f"Could not change address type: {e}")

@@ -447,41 +447,85 @@ class BitcoinService(QObject):
             return
             
         try:
-            # Import address to wallet for monitoring (if not already imported)
+            # Try different methods depending on Bitcoin Core version and wallet type
+            balance_btc = Decimal('0')
+            utxo_count = 0
+            
+            # Method 1: Try scantxoutset (works with any address, no import needed)
             try:
-                self.rpc_connection.importaddress(address, "", False)
-            except JSONRPCException as e:
-                # Address might already be imported or node might not support this
-                if "already exists" not in str(e).lower():
-                    print(f"⚠️ Could not import address {address}: {e}")
+                scan_result = self._safe_rpc_call(
+                    lambda: self.rpc_connection.scantxoutset("start", [f"addr({address})"])
+                )
+                if scan_result:
+                    balance_btc = Decimal(str(scan_result.get('total_amount', 0)))
+                    utxo_count = len(scan_result.get('unspents', []))
+                    print(f"📊 scantxoutset result for {address}: {balance_btc:.8f} BTC ({utxo_count} UTXOs)")
+                else:
+                    print(f"⚠️ scantxoutset failed for {address}")
+                    
+            except Exception as e:
+                print(f"⚠️ scantxoutset not available: {e}")
+                
+                # Method 2: Try listunspent (requires imported address)
+                try:
+                    # First try to import the address (works with legacy wallets)
+                    try:
+                        self.rpc_connection.importaddress(address, "", False)
+                        print(f"✅ Imported address {address}")
+                    except JSONRPCException as import_error:
+                        if "already exists" in str(import_error).lower():
+                            print(f"📍 Address {address} already imported")
+                        elif "descriptor wallet" in str(import_error).lower():
+                            print(f"⚠️ Descriptor wallet detected - using alternative method")
+                            # For descriptor wallets, we'll use scantxoutset which we already tried
+                            balance_btc = Decimal('0')
+                        else:
+                            print(f"⚠️ Could not import address {address}: {import_error}")
+                    
+                    # Try listunspent for imported address
+                    if balance_btc == 0:  # Only if scantxoutset didn't work
+                        unspent = self._safe_rpc_call(lambda: self.rpc_connection.listunspent(0, 9999999, [address]))
+                        if unspent is not None:
+                            balance_btc = sum(Decimal(str(utxo['amount'])) for utxo in unspent)
+                            utxo_count = len(unspent)
+                            print(f"📊 listunspent result for {address}: {balance_btc:.8f} BTC ({utxo_count} UTXOs)")
+                        
+                except Exception as e2:
+                    print(f"⚠️ listunspent failed for {address}: {e2}")
             
-            # Get address balance using listunspent
-            unspent = self._safe_rpc_call(lambda: self.rpc_connection.listunspent(0, 9999999, [address]))
+            # Update stored balance
+            self.address_balances[address] = balance_btc
             
-            if unspent is not None:
-                # Calculate total balance
-                balance = sum(Decimal(str(utxo['amount'])) for utxo in unspent)
-                self.address_balances[address] = balance
-                
-                # Get current Bitcoin price for USD conversion (placeholder)
-                btc_price_usd = self.get_btc_price_estimate()
-                balance_usd = float(balance) * btc_price_usd
-                
-                balance_info = {
-                    'balance_btc': balance,
-                    'balance_usd': balance_usd,
-                    'confirmed': balance,  # For now, treat all as confirmed
-                    'unconfirmed': Decimal('0'),
-                    'utxo_count': len(unspent),
-                    'last_updated': time.time()
-                }
-                
-                # Emit signal with balance update
-                self.address_balance_updated.emit(address, balance_info)
-                print(f"💰 Balance updated for {address}: {balance:.8f} BTC")
+            # Get current Bitcoin price for USD conversion
+            btc_price_usd = self.get_btc_price_estimate()
+            balance_usd = float(balance_btc) * btc_price_usd
+            
+            balance_info = {
+                'balance_btc': balance_btc,
+                'balance_usd': balance_usd,
+                'confirmed': balance_btc,  # For now, treat all as confirmed
+                'unconfirmed': Decimal('0'),
+                'utxo_count': utxo_count,
+                'last_updated': time.time()
+            }
+            
+            # Emit signal with balance update
+            self.address_balance_updated.emit(address, balance_info)
+            print(f"💰 Balance updated for {address}: {balance_btc:.8f} BTC (${balance_usd:.2f})")
                 
         except Exception as e:
             print(f"❌ Error updating balance for {address}: {e}")
+            # Emit zero balance on error
+            balance_info = {
+                'balance_btc': Decimal('0'),
+                'balance_usd': 0.0,
+                'confirmed': Decimal('0'),
+                'unconfirmed': Decimal('0'),
+                'utxo_count': 0,
+                'last_updated': time.time(),
+                'error': str(e)
+            }
+            self.address_balance_updated.emit(address, balance_info)
     
     def get_btc_price_estimate(self):
         """Get Bitcoin price estimate (placeholder - would use real API)."""
