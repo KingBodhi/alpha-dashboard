@@ -64,14 +64,14 @@ class BitcoinService(QObject):
         if self.is_low_power_device:
             self.base_timeout = 45
             self.connection_timeout = 60
-            self.update_interval = 20000  # 20 seconds
+            self.update_interval = 30000  # 30 seconds - much slower
             self.max_retries = 8
             self.retry_delay = 5
             print("🔧 Low-power device detected - using extended timeouts")
         else:
             self.base_timeout = 15
             self.connection_timeout = 30
-            self.update_interval = BITCOIN_RPC_CONFIG["update_interval"]
+            self.update_interval = 15000  # 15 seconds - slower than before
             self.max_retries = 5
             self.retry_delay = 3
         
@@ -261,6 +261,7 @@ class BitcoinService(QObject):
             if blockchain_info:
                 self.blockchain_info_updated.emit(blockchain_info)
                 self.consecutive_failures = 0
+                self._adjust_update_frequency(success=True)
                 
                 # Check if node is busy syncing
                 verification_progress = blockchain_info.get('verificationprogress', 1.0)
@@ -275,6 +276,11 @@ class BitcoinService(QObject):
                     return
                 else:
                     self.status_message.emit("✅ Updated successfully")
+            else:
+                # Failed to get blockchain info - node may be busy
+                self._adjust_update_frequency(success=False)
+                self.status_message.emit("⚠️ Bitcoin Core is busy - reducing update frequency")
+                return
             
             # Only get other info if node is not busy
             if not self.node_busy:
@@ -318,15 +324,21 @@ class BitcoinService(QObject):
             return result
             
         except JSONRPCException as e:
-            print(f"RPC Error: {e.error.get('message', str(e))}")
+            # Just return None silently for common busy node errors
+            error_msg = str(e)
+            if any(x in error_msg for x in ["Request-sent", "Work queue", "timeout", "busy"]):
+                return None
+            # Only log unexpected errors
+            print(f"RPC Error: {e.error.get('message', error_msg) if hasattr(e, 'error') else error_msg}")
             return None
         except Exception as e:
-            if "timeout" in str(e).lower():
-                print(f"RPC timeout after {timeout}s")
+            error_str = str(e)
+            # Silently handle common timeout/busy errors
+            if any(x in error_str.lower() for x in ["timeout", "connection", "request-sent"]):
                 return None
-            else:
-                print(f"RPC call failed: {e}")
-                return None
+            # Only log unexpected errors
+            print(f"RPC call failed: {error_str}")
+            return None
     
     def _handle_update_error(self, error):
         """Handle update errors with adaptive behavior."""
@@ -368,23 +380,25 @@ class BitcoinService(QObject):
                     break
                     
                 # Get latest block hash
-                current_hash = self.rpc_connection.getbestblockhash()
+                current_hash = self._safe_rpc_call(self.rpc_connection.getbestblockhash)
                 
-                # Check if we have a new block
-                if self.last_block_hash and current_hash != self.last_block_hash:
-                    # Get block details
-                    block_data = self.rpc_connection.getblock(current_hash)
-                    self.new_block_received.emit(block_data)
-                    print(f"🔗 New block: {current_hash[:16]}... (Height: {block_data.get('height', 'unknown')})")
-                
-                self.last_block_hash = current_hash
+                if current_hash:
+                    # Check if we have a new block
+                    if self.last_block_hash and current_hash != self.last_block_hash:
+                        # Get block details
+                        block_data = self._safe_rpc_call(lambda: self.rpc_connection.getblock(current_hash))
+                        if block_data:
+                            self.new_block_received.emit(block_data)
+                            print(f"🔗 New block: {current_hash[:16]}... (Height: {block_data.get('height', 'unknown')})")
+                    
+                    self.last_block_hash = current_hash
                 
                 # Sleep for a bit before checking again
-                time.sleep(2)
+                time.sleep(5)  # Longer sleep to reduce load
                 
             except Exception as e:
-                print(f"❌ Block monitoring error: {e}")
-                time.sleep(5)  # Wait longer on error
+                # Silently handle errors in background thread
+                time.sleep(10)  # Wait longer on error
     
     def get_block_by_hash(self, block_hash):
         """Get detailed block information by hash."""
@@ -566,3 +580,38 @@ class BitcoinService(QObject):
         for address in self.monitored_addresses:
             self.update_address_balance(address)
             self.update_address_transactions(address)
+    
+    def _adjust_update_frequency(self, success=True):
+        """Dynamically adjust update frequency based on node responsiveness."""
+        if success:
+            # Gradually return to normal frequency if things are working well
+            if self.update_timer.interval() > self.update_interval:
+                new_interval = max(self.update_interval, self.update_timer.interval() - 2000)
+                self.update_timer.setInterval(new_interval)
+                if new_interval != self.update_timer.interval():
+                    print(f"📈 Update frequency increased to {new_interval/1000}s")
+        else:
+            # Slow down updates when having issues
+            current_interval = self.update_timer.interval()
+            max_interval = 60000 if self.is_low_power_device else 30000  # 60s or 30s max
+            new_interval = min(max_interval, current_interval + 5000)
+            
+            if new_interval != current_interval:
+                self.update_timer.setInterval(new_interval)
+                print(f"📉 Update frequency reduced to {new_interval/1000}s due to node being busy")
+    
+    def _update_data_background(self):
+        """Run update_data in background thread to prevent UI blocking."""
+        if not self.is_connected or not self.rpc_connection:
+            return
+        
+        # Run in background thread to prevent UI blocking
+        def background_update():
+            try:
+                self.update_data_sync()
+            except Exception as e:
+                self._handle_update_error(e)
+        
+        # Create and start background thread
+        update_thread = threading.Thread(target=background_update, daemon=True)
+        update_thread.start()

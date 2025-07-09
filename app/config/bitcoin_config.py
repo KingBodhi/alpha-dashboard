@@ -9,7 +9,7 @@ BITCOIN_RPC_CONFIG = {
     "rpc_password": "admin123", 
     "rpc_host": "127.0.0.1",
     "rpc_port": 8332,
-    "update_interval": 5000,  # Update interval in milliseconds (5 seconds)
+    "update_interval": 10000,  # Update interval in milliseconds (10 seconds, reduced load)
 }
 
 # UI Configuration
