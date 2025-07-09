@@ -508,10 +508,28 @@ class BitcoinService(QObject):
                     utxo_count = len(scan_result.get('unspents', []))
                     print(f"📊 scantxoutset result for {address}: {balance_btc:.8f} BTC ({utxo_count} UTXOs)")
                 else:
-                    print(f"⚠️ scantxoutset failed for {address}")
+                    # This is normal - address might be new or node might be busy
+                    print(f"📍 scantxoutset: no UTXOs found for {address[:8]}... (trying alternative method)")
                     
             except Exception as e:
-                print(f"⚠️ scantxoutset not available: {e}")
+                # Check if it's a "node busy" or expected error
+                error_str = str(e).lower()
+                if any(phrase in error_str for phrase in ['busy', 'request-sent', 'loading block index', 'verifying']):
+                    print(f"⏳ Bitcoin node busy, retrying address {address[:8]}... later")
+                    self.node_busy = True
+                    # Return what we have so far (might be 0)
+                    balance_info = {
+                        'balance_btc': balance_btc,
+                        'balance_sat': int(balance_btc * 100_000_000),
+                        'utxo_count': 0,
+                        'status': 'node_busy'
+                    }
+                    if address in self.address_balances:
+                        self.address_balances[address] = balance_btc
+                    self.address_balance_updated.emit(address, balance_info)
+                    return
+                else:
+                    print(f"⚠️ Address monitoring unavailable for {address[:8]}...: {e}")
                 
                 # Method 2: Try listunspent (requires imported address)
                 try:
@@ -558,7 +576,18 @@ class BitcoinService(QObject):
             
             # Emit signal with balance update
             self.address_balance_updated.emit(address, balance_info)
-            print(f"💰 Balance updated for {address}: {balance_btc:.8f} BTC (${balance_usd:.2f})")
+            
+            # Only show detailed balance updates for non-zero balances or first time
+            if balance_btc > 0 or not hasattr(self, f'_first_update_{address}'):
+                print(f"💰 Balance updated for {address[:8]}...: {balance_btc:.8f} BTC (${balance_usd:.2f})")
+                setattr(self, f'_first_update_{address}', True)
+            
+            # Update status message for UI
+            if balance_btc > 0:
+                self.status_message.emit(f"✅ Address monitoring active - Balance: {balance_btc:.8f} BTC")
+            elif not hasattr(self, '_monitoring_status_shown'):
+                self.status_message.emit(f"📍 Monitoring address - No funds detected")
+                self._monitoring_status_shown = True
                 
         except Exception as e:
             print(f"❌ Error updating balance for {address}: {e}")
@@ -611,8 +640,24 @@ class BitcoinService(QObject):
             print(f"❌ Error updating transactions for {address}: {e}")
     
     def update_all_monitored_addresses(self):
-        """Update all monitored addresses."""
-        for address in self.monitored_addresses:
+        """Update all monitored addresses with intelligent throttling."""
+        if not self.monitored_addresses:
+            return
+            
+        # If node was busy, wait longer between updates
+        if self.node_busy:
+            if not hasattr(self, '_skip_address_update_counter'):
+                self._skip_address_update_counter = 0
+            self._skip_address_update_counter += 1
+            if self._skip_address_update_counter < 3:  # Skip 2 updates
+                print(f"⏳ Skipping address updates while node is busy ({self._skip_address_update_counter}/3)")
+                return
+            self._skip_address_update_counter = 0
+            print(f"🔄 Retrying address updates after busy period")
+            
+        # Reset node busy flag and try address updates
+        self.node_busy = False
+        for address in list(self.monitored_addresses):
             self.update_address_balance(address)
             self.update_address_transactions(address)
     

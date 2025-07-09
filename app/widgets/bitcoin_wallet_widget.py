@@ -50,6 +50,11 @@ class BitcoinWalletWidget(QWidget):
         self.balance_usd_label.setStyleSheet("color: #666; font-style: italic;")
         wallet_layout.addWidget(self.balance_usd_label)
         
+        # Status display
+        self.status_label = QLabel("📍 Ready to monitor address")
+        self.status_label.setStyleSheet("color: #666; font-size: 12px; padding: 5px;")
+        wallet_layout.addWidget(self.status_label)
+        
         # Sync status
         sync_layout = QHBoxLayout()
         sync_layout.addWidget(QLabel("Sync Status:"))
@@ -120,6 +125,7 @@ class BitcoinWalletWidget(QWidget):
         balance_btc = balance_info.get('balance_btc', Decimal('0'))
         balance_usd = balance_info.get('balance_usd', 0.0)
         utxo_count = balance_info.get('utxo_count', 0)
+        status = balance_info.get('status', '')
         
         # Update display
         self.balance = balance_btc
@@ -130,13 +136,22 @@ class BitcoinWalletWidget(QWidget):
         else:
             self.balance_usd_label.setText("≈ $0.00 USD")
         
-        # Update sync status
-        if utxo_count > 0:
+        # Update status based on balance and node status
+        if status == 'node_busy':
+            self.status_label.setText("⏳ Node busy - retrying...")
+            self.status_label.setStyleSheet("color: #ff9800; font-size: 12px; padding: 5px;")
+            self.sync_status_label.setText("⏳ Node Busy")
+            self.sync_status_label.setStyleSheet("color: orange;")
+        elif balance_btc > 0:
+            self.status_label.setText(f"✅ Monitoring active - {utxo_count} UTXO(s)")
+            self.status_label.setStyleSheet("color: #4caf50; font-size: 12px; padding: 5px;")
             self.sync_status_label.setText(f"🟢 Synced ({utxo_count} UTXOs)")
             self.sync_status_label.setStyleSheet("color: green; font-weight: bold;")
         else:
-            self.sync_status_label.setText("🟢 Synced (no UTXOs)")
-            self.sync_status_label.setStyleSheet("color: green;")
+            self.status_label.setText("📍 Monitoring - No funds detected")
+            self.status_label.setStyleSheet("color: #666; font-size: 12px; padding: 5px;")
+            self.sync_status_label.setText("🟢 Monitoring")
+            self.sync_status_label.setStyleSheet("color: green; font-weight: bold;")
     
     @pyqtSlot(str, list)
     def update_address_transactions(self, address, transactions):
