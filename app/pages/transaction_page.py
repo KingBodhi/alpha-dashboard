@@ -51,10 +51,9 @@ class TransactionPage(QWidget):
         """Set the wallet address and private key for transactions."""
         self.wallet_address = address
         self.private_key_wif = private_key_wif
+        self._pending_address = address  # Always store for later use
+        
         if address:
-            # Store address for later use when receive tab is created
-            self._pending_address = address
-            
             # Update the receive address display if it exists
             if hasattr(self, 'receive_address_label'):
                 self.receive_address_label.setText(address)
@@ -64,7 +63,9 @@ class TransactionPage(QWidget):
         """Update wallet balance from Bitcoin service."""
         if address == self.wallet_address:
             self.wallet_balance = balance_info.get('balance_btc', Decimal('0'))
-            self.balance_label.setText(f"Balance: {self.wallet_balance:.8f} BTC")
+            # Update balance label if it exists (created in send tab)
+            if hasattr(self, 'balance_label'):
+                self.balance_label.setText(f"Balance: {self.wallet_balance:.8f} BTC")
             print(f"💰 Updated wallet balance: {self.wallet_balance:.8f} BTC")
     
     def update_transaction_history_from_blockchain(self, address, transactions):
@@ -117,6 +118,20 @@ class TransactionPage(QWidget):
         self.builder_tab = self.create_builder_tab()
         self.tabs.addTab(self.builder_tab, "Advanced Builder")
         
+        # Apply any pending address/balance updates now that UI is ready
+        self._apply_pending_updates()
+    
+    def _apply_pending_updates(self):
+        """Apply any pending updates once UI components are created."""
+        # Update receive address if we have a pending address
+        if hasattr(self, '_pending_address') and self._pending_address:
+            if hasattr(self, 'receive_address_label'):
+                self.receive_address_label.setText(self._pending_address)
+        
+        # Update balance display if we have a current balance
+        if self.wallet_balance > 0 and hasattr(self, 'balance_label'):
+            self.balance_label.setText(f"Balance: {self.wallet_balance:.8f} BTC")
+    
     def create_send_tab(self):
         """Create the send Bitcoin tab."""
         widget = QWidget()
@@ -706,14 +721,11 @@ Note: This is a preview only. No transaction has been created yet."""
         """Open coin control dialog."""
         QMessageBox.information(self, "Coin Control", "Coin control will be implemented when connected to the blockchain.")
     
-    def set_wallet_address(self, address):
-        """Set the wallet address for receiving transactions."""
-        self.receive_address_label.setText(address)
-    
     def update_balance(self, balance_btc, balance_usd=None):
         """Update the balance display."""
-        self.balance_label.setText(f"Balance: {balance_btc:.8f} BTC")
-        if balance_usd is not None:
+        if hasattr(self, 'balance_label'):
+            self.balance_label.setText(f"Balance: {balance_btc:.8f} BTC")
+        if balance_usd is not None and hasattr(self, 'balance_usd_label'):
             self.balance_usd_label.setText(f"≈ ${balance_usd:.2f} USD")
     
     def update_transaction_history_display(self):
