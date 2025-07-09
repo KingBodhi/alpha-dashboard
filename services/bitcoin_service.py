@@ -1,14 +1,24 @@
 import json
 import threading
 import time
+import platform
+import os
 from decimal import Decimal
 from PyQt6.QtCore import QObject, pyqtSignal, QTimer
 from bitcoinrpc.authproxy import AuthServiceProxy, JSONRPCException
 from app.config.bitcoin_config import BITCOIN_RPC_CONFIG, UI_CONFIG
 
+# Try to import psutil for system monitoring, fallback if not available
+try:
+    import psutil
+    HAS_PSUTIL = True
+except ImportError:
+    HAS_PSUTIL = False
+    print("⚠️ psutil not available - system monitoring disabled")
+
 
 class BitcoinService(QObject):
-    """Service to handle Bitcoin RPC connections and data updates."""
+    """Service to handle Bitcoin RPC connections with adaptive performance handling."""
     
     # Signals for UI updates
     connection_status_changed = pyqtSignal(bool)  # True if connected, False if disconnected
@@ -18,6 +28,7 @@ class BitcoinService(QObject):
     network_info_updated = pyqtSignal(dict)     # Network information
     peer_info_updated = pyqtSignal(list)        # Connected peers
     error_occurred = pyqtSignal(str)            # Error messages
+    status_message = pyqtSignal(str)            # Status updates
     
     def __init__(self, rpc_user=None, rpc_password=None, 
                  rpc_host=None, rpc_port=None):
@@ -34,44 +45,171 @@ class BitcoinService(QObject):
         self.is_connected = False
         self.last_block_hash = None
         
+        # Adaptive settings based on system capabilities
+        self.is_low_power_device = self._detect_low_power_device()
+        self.consecutive_failures = 0
+        self.max_consecutive_failures = 3
+        self.node_busy = False
+        
+        # Adaptive timeouts based on device type
+        if self.is_low_power_device:
+            self.base_timeout = 45
+            self.connection_timeout = 60
+            self.update_interval = 20000  # 20 seconds
+            self.max_retries = 8
+            self.retry_delay = 5
+            print("🔧 Low-power device detected - using extended timeouts")
+        else:
+            self.base_timeout = 15
+            self.connection_timeout = 30
+            self.update_interval = BITCOIN_RPC_CONFIG["update_interval"]
+            self.max_retries = 5
+            self.retry_delay = 3
+        
+        # Performance tracking
+        self.rpc_call_times = []
+        self.slow_call_threshold = 10 if self.is_low_power_device else 5
+        
         # Update timers
         self.update_timer = QTimer()
         self.update_timer.timeout.connect(self.update_data)
-        self.update_timer.setInterval(BITCOIN_RPC_CONFIG["update_interval"])  # Use config interval
+        self.update_timer.setInterval(self.update_interval)
         
         # Background thread for blocking operations
         self.worker_thread = None
         self.should_stop = False
         
-    def connect_to_node(self):
-        """Establish connection to Bitcoin node."""
+    def _detect_low_power_device(self):
+        """Detect if running on a low-power device like Raspberry Pi."""
         try:
-            rpc_url = f"http://{self.rpc_user}:{self.rpc_password}@{self.rpc_host}:{self.rpc_port}"
-            self.rpc_connection = AuthServiceProxy(rpc_url)
+            # Check if it's a Raspberry Pi
+            if os.path.exists('/proc/cpuinfo'):
+                with open('/proc/cpuinfo', 'r') as f:
+                    cpuinfo = f.read().lower()
+                    if 'raspberry pi' in cpuinfo or 'bcm' in cpuinfo:
+                        return True
             
-            # Test connection with a simple call
-            info = self.rpc_connection.getblockchaininfo()
+            # Check ARM architecture (common on low-power devices)
+            machine = platform.machine().lower()
+            if 'arm' in machine or 'aarch64' in machine:
+                return True
             
-            self.is_connected = True
-            self.connection_status_changed.emit(True)
+            # Check available memory if psutil is available
+            if HAS_PSUTIL:
+                memory_gb = psutil.virtual_memory().total / (1024**3)
+                if memory_gb < 4:  # Less than 4GB RAM
+                    return True
             
-            print(f"✅ Connected to Bitcoin node at {self.rpc_host}:{self.rpc_port}")
-            print(f"📊 Chain: {info.get('chain', 'unknown')}")
-            print(f"📦 Blocks: {info.get('blocks', 0)}")
+            return False
+            
+        except Exception:
+            return False
+    
+    def _check_system_resources(self):
+        """Check system resources and adjust timeouts if needed."""
+        if not HAS_PSUTIL:
+            return True
+            
+        try:
+            # Check memory and CPU usage
+            memory = psutil.virtual_memory()
+            cpu_percent = psutil.cpu_percent(interval=0.1)
+            
+            # Adjust timeouts based on system load
+            if memory.percent > 85 or cpu_percent > 90:
+                self.base_timeout = min(120, self.base_timeout * 1.5)
+                self.status_message.emit("⚠️ High system load detected - adjusting timeouts")
+                return False
             
             return True
             
-        except JSONRPCException as e:
-            error_msg = f"RPC Error: {e.error['message']}"
-            print(f"❌ {error_msg}")
-            self.error_occurred.emit(error_msg)
-            return False
+        except Exception:
+            return True
+        
+    def connect_to_node(self):
+        """Establish connection to Bitcoin node with adaptive retry logic."""
+        for attempt in range(self.max_retries):
+            try:
+                self.status_message.emit(f"Connecting... (attempt {attempt + 1}/{self.max_retries})")
+                
+                # Check system resources before attempting connection
+                self._check_system_resources()
+                
+                # Test basic connectivity first
+                import socket
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(10)
+                
+                try:
+                    result = sock.connect_ex((self.rpc_host, self.rpc_port))
+                    if result != 0:
+                        raise ConnectionError(f"Cannot connect to {self.rpc_host}:{self.rpc_port}")
+                finally:
+                    sock.close()
+                
+                # Create RPC connection with adaptive timeout
+                rpc_url = f"http://{self.rpc_user}:{self.rpc_password}@{self.rpc_host}:{self.rpc_port}"
+                self.rpc_connection = AuthServiceProxy(rpc_url, timeout=self.base_timeout)
+                
+                # Test connection with a simple call
+                start_time = time.time()
+                info = self.rpc_connection.getblockchaininfo()
+                call_time = time.time() - start_time
+                
+                # Track performance and adjust timeouts
+                if call_time > self.slow_call_threshold:
+                    self.base_timeout = min(120, self.base_timeout * 1.2)
+                    print(f"⚠️ Slow RPC call detected ({call_time:.1f}s) - adjusting timeout to {self.base_timeout}s")
+                
+                self.is_connected = True
+                self.consecutive_failures = 0
+                self.connection_status_changed.emit(True)
+                
+                # Check if node is syncing
+                verification_progress = info.get('verificationprogress', 1.0)
+                if verification_progress < 0.999:
+                    self.node_busy = True
+                    self.status_message.emit("🔄 Bitcoin node is syncing - using reduced update frequency")
+                else:
+                    self.node_busy = False
+                    self.status_message.emit("✅ Connected successfully!")
+                
+                print(f"✅ Connected to Bitcoin node at {self.rpc_host}:{self.rpc_port}")
+                print(f"📊 Chain: {info.get('chain', 'unknown')}")
+                print(f"📦 Blocks: {info.get('blocks', 0)}")
+                
+                return True
+                
+            except JSONRPCException as e:
+                error_msg = f"RPC Error: {e.error['message']}"
+                print(f"❌ {error_msg}")
+                if "unauthorized" in error_msg.lower():
+                    self.error_occurred.emit("Authentication failed. Check RPC username/password.")
+                    break
+                    
+            except Exception as e:
+                error_msg = str(e)
+                print(f"❌ Connection attempt {attempt + 1} failed: {error_msg}")
+                
+                if "timeout" in error_msg.lower():
+                    self.status_message.emit(f"Timeout (attempt {attempt + 1}) - Bitcoin node may be busy")
+                elif "connection refused" in error_msg.lower():
+                    self.status_message.emit(f"Connection refused (attempt {attempt + 1}) - Is Bitcoin Core running?")
+                else:
+                    self.status_message.emit(f"Error: {error_msg}")
             
-        except Exception as e:
-            error_msg = f"Connection failed: {str(e)}"
-            print(f"❌ {error_msg}")
-            self.error_occurred.emit(error_msg)
-            return False
+            # Wait before retry with progressive backoff
+            if attempt < self.max_retries - 1:
+                wait_time = self.retry_delay + (attempt * 2)
+                self.status_message.emit(f"Retrying in {wait_time} seconds...")
+                time.sleep(wait_time)
+        
+        # All attempts failed
+        self.is_connected = False
+        self.connection_status_changed.emit(False)
+        self.status_message.emit("❌ Failed to connect after all attempts")
+        self.error_occurred.emit("Failed to connect to Bitcoin node. Check if Bitcoin Core is running and RPC is properly configured.")
+        return False
     
     def disconnect(self):
         """Disconnect from Bitcoin node."""
@@ -104,40 +242,113 @@ class BitcoinService(QObject):
         return True
     
     def update_data(self):
-        """Update various Bitcoin node data."""
+        """Update various Bitcoin node data with adaptive error handling."""
         if not self.is_connected or not self.rpc_connection:
             return
         
         try:
-            # Get blockchain info
-            blockchain_info = self.rpc_connection.getblockchaininfo()
-            self.blockchain_info_updated.emit(blockchain_info)
+            # Always try to get blockchain info first
+            blockchain_info = self._safe_rpc_call(self.rpc_connection.getblockchaininfo)
+            if blockchain_info:
+                self.blockchain_info_updated.emit(blockchain_info)
+                self.consecutive_failures = 0
+                
+                # Check if node is busy syncing
+                verification_progress = blockchain_info.get('verificationprogress', 1.0)
+                blocks = blockchain_info.get('blocks', 0)
+                headers = blockchain_info.get('headers', 0)
+                
+                self.node_busy = verification_progress < 0.999 or headers > blocks
+                
+                if self.node_busy:
+                    self.status_message.emit("🔄 Node syncing - limited updates")
+                    # Only update blockchain info when syncing to reduce load
+                    return
+                else:
+                    self.status_message.emit("✅ Updated successfully")
             
-            # Get network info
-            network_info = self.rpc_connection.getnetworkinfo()
-            self.network_info_updated.emit(network_info)
-            
-            # Get mempool info
-            mempool_info = self.rpc_connection.getmempoolinfo()
-            self.mempool_updated.emit(mempool_info)
-            
-            # Get peer info (limit to prevent UI overload)
-            peer_info = self.rpc_connection.getpeerinfo()[:UI_CONFIG["max_peers_display"]]
-            self.peer_info_updated.emit(peer_info)
-            
-        except JSONRPCException as e:
-            error_msg = f"RPC Error during update: {e.error['message']}"
-            print(f"❌ {error_msg}")
-            self.error_occurred.emit(error_msg)
+            # Only get other info if node is not busy
+            if not self.node_busy:
+                # Get network info
+                network_info = self._safe_rpc_call(self.rpc_connection.getnetworkinfo)
+                if network_info:
+                    self.network_info_updated.emit(network_info)
+                
+                # Get mempool info
+                mempool_info = self._safe_rpc_call(self.rpc_connection.getmempoolinfo)
+                if mempool_info:
+                    self.mempool_updated.emit(mempool_info)
+                
+                # Get peer info (limit to prevent UI overload)
+                peer_info = self._safe_rpc_call(
+                    lambda: self.rpc_connection.getpeerinfo()[:UI_CONFIG["max_peers_display"]]
+                )
+                if peer_info:
+                    self.peer_info_updated.emit(peer_info)
             
         except Exception as e:
-            error_msg = f"Update failed: {str(e)}"
-            print(f"❌ {error_msg}")
-            # Don't emit error for Decimal conversion issues, just log them
-            if "Decimal" not in str(e):
-                self.error_occurred.emit(error_msg)
-            # Try to reconnect on next update
+            self._handle_update_error(e)
+    
+    def _safe_rpc_call(self, rpc_func, timeout_override=None):
+        """Make RPC call with timeout and error handling."""
+        try:
+            timeout = timeout_override or self.base_timeout
+            
+            # Create a new connection for this call with specific timeout
+            rpc_url = f"http://{self.rpc_user}:{self.rpc_password}@{self.rpc_host}:{self.rpc_port}"
+            temp_rpc = AuthServiceProxy(rpc_url, timeout=timeout)
+            
+            start_time = time.time()
+            result = rpc_func() if hasattr(rpc_func, '__call__') else temp_rpc.__getattr__(rpc_func)()
+            call_time = time.time() - start_time
+            
+            # Track slow calls
+            if call_time > self.slow_call_threshold:
+                print(f"⚠️ Slow RPC call: {call_time:.1f}s")
+            
+            return result
+            
+        except JSONRPCException as e:
+            print(f"RPC Error: {e}")
+            return None
+        except Exception as e:
+            if "timeout" in str(e).lower():
+                print(f"RPC timeout after {timeout}s")
+                return None
+            else:
+                raise e
+    
+    def _handle_update_error(self, error):
+        """Handle update errors with adaptive behavior."""
+        self.consecutive_failures += 1
+        error_str = str(error).lower()
+        
+        if "timeout" in error_str:
+            if self.consecutive_failures <= self.max_consecutive_failures:
+                print(f"⏰ Update timeout (failure {self.consecutive_failures})")
+                self.status_message.emit(f"⏰ Timeout - Bitcoin node may be busy")
+                # Don't disconnect on timeout, just skip this update
+                return
+            else:
+                self.status_message.emit("❌ Multiple timeouts - adjusting settings")
+                # Increase timeout for future calls
+                self.base_timeout = min(120, self.base_timeout * 1.5)
+                self.consecutive_failures = 0
+        elif "connection" in error_str:
+            print(f"❌ Connection lost: {error}")
             self.is_connected = False
+            self.connection_status_changed.emit(False)
+            self.status_message.emit("❌ Connection lost - attempting to reconnect")
+            
+            # Try to reconnect
+            self.start_monitoring()
+        else:
+            print(f"❌ Update error: {error}")
+            self.status_message.emit(f"❌ Update error: {str(error)}")
+        
+        # Reset failure count if too many
+        if self.consecutive_failures > self.max_consecutive_failures:
+            self.consecutive_failures = 0
     
     def _monitor_blocks(self):
         """Monitor for new blocks in background thread."""

@@ -58,22 +58,33 @@ class BitcoinDashboard(QWidget):
     def create_connection_status(self, parent_layout):
         """Create connection status indicator."""
         status_group = QGroupBox("Bitcoin Node Connection")
-        status_layout = QHBoxLayout()
+        status_layout = QVBoxLayout()
         status_group.setLayout(status_layout)
+        
+        # Connection status row
+        connection_row = QHBoxLayout()
         
         self.connection_label = QLabel("⚫ Disconnected")
         self.connection_label.setStyleSheet("QLabel { color: red; font-weight: bold; }")
-        status_layout.addWidget(self.connection_label)
+        connection_row.addWidget(self.connection_label)
         
-        status_layout.addStretch()
+        connection_row.addStretch()
         
         self.connect_button = QPushButton("Connect")
         self.connect_button.clicked.connect(self.on_connect_clicked)
-        status_layout.addWidget(self.connect_button)
+        connection_row.addWidget(self.connect_button)
         
         self.config_button = QPushButton("Settings")
         self.config_button.clicked.connect(self.on_config_clicked)
-        status_layout.addWidget(self.config_button)
+        connection_row.addWidget(self.config_button)
+        
+        status_layout.addLayout(connection_row)
+        
+        # Status message label
+        self.status_message_label = QLabel("Ready to connect")
+        self.status_message_label.setStyleSheet("QLabel { color: #666; font-style: italic; }")
+        self.status_message_label.setWordWrap(True)
+        status_layout.addWidget(self.status_message_label)
         
         parent_layout.addWidget(status_group)
         
@@ -188,10 +199,12 @@ class BitcoinDashboard(QWidget):
             self.connection_label.setText("🟢 Connected")
             self.connection_label.setStyleSheet("QLabel { color: green; font-weight: bold; }")
             self.connect_button.setText("Disconnect")
+            self.status_message_label.setText("Connected to Bitcoin node")
         else:
             self.connection_label.setText("⚫ Disconnected")
             self.connection_label.setStyleSheet("QLabel { color: red; font-weight: bold; }")
             self.connect_button.setText("Connect")
+            self.status_message_label.setText("Disconnected from Bitcoin node")
     
     @pyqtSlot(dict)
     def update_blockchain_info(self, info):
@@ -302,6 +315,33 @@ class BitcoinDashboard(QWidget):
             
             item_text = f"{addr} - {subver} (v{version}) - Connected: {conn_time_str}"
             self.peers_list.addItem(item_text)
+    
+    @pyqtSlot(str)
+    def update_status_message(self, message):
+        """Update status message display."""
+        self.status_message_label.setText(message)
+        
+        # Update styling based on message type
+        if "✅" in message or "Connected" in message:
+            self.status_message_label.setStyleSheet("QLabel { color: green; font-style: italic; }")
+        elif "❌" in message or "Error" in message or "Failed" in message:
+            self.status_message_label.setStyleSheet("QLabel { color: red; font-style: italic; }")
+        elif "⚠️" in message or "Timeout" in message or "Warning" in message:
+            self.status_message_label.setStyleSheet("QLabel { color: orange; font-style: italic; }")
+        elif "🔄" in message or "sync" in message.lower():
+            self.status_message_label.setStyleSheet("QLabel { color: blue; font-style: italic; }")
+        else:
+            self.status_message_label.setStyleSheet("QLabel { color: #666; font-style: italic; }")
+    
+    @pyqtSlot(str)
+    def show_error_message(self, error_message):
+        """Show error message to user."""
+        from PyQt6.QtWidgets import QMessageBox
+        msg = QMessageBox()
+        msg.setIcon(QMessageBox.Icon.Warning)
+        msg.setWindowTitle("Bitcoin Dashboard Error")
+        msg.setText(error_message)
+        msg.exec()
     
     def on_connect_clicked(self):
         """Handle connect/disconnect button click."""

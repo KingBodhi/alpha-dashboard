@@ -72,6 +72,8 @@ class MainWindow(QMainWindow):
         self.bitcoin_service.mempool_updated.connect(dashboard.update_mempool_info)
         self.bitcoin_service.new_block_received.connect(dashboard.add_new_block)
         self.bitcoin_service.peer_info_updated.connect(dashboard.update_peers_info)
+        self.bitcoin_service.status_message.connect(dashboard.update_status_message)
+        self.bitcoin_service.error_occurred.connect(dashboard.show_error_message)
         
         # Connect Bitcoin service to home page summary
         self.bitcoin_service.connection_status_changed.connect(self.home_page.bitcoin_summary.update_connection_status)
