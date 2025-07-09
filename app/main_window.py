@@ -92,6 +92,7 @@ class MainWindow(QMainWindow):
             self.bitcoin_service.add_address_to_monitor(bitcoin_address)
         
         # Connect Bitcoin service to transaction page
+        self.transaction_page.set_bitcoin_service(self.bitcoin_service)
         self.transaction_page.set_wallet_address(bitcoin_address)
         
         # Set up wallet service reference for manual updates

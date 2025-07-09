@@ -20,8 +20,52 @@ class TransactionPage(QWidget):
     def __init__(self):
         super().__init__()
         self.transaction_history = []
+        self.bitcoin_service = None
+        self.wallet_address = None
+        self.wallet_balance = Decimal('0')
         self.init_ui()
         
+    def set_bitcoin_service(self, bitcoin_service):
+        """Set the Bitcoin service for blockchain integration."""
+        self.bitcoin_service = bitcoin_service
+        if self.bitcoin_service:
+            # Connect to balance updates
+            self.bitcoin_service.address_balance_updated.connect(self.update_wallet_balance)
+            # Connect to transaction updates
+            self.bitcoin_service.address_transactions_updated.connect(self.update_transaction_history_from_blockchain)
+            # Connect to transaction creation signals
+            self.bitcoin_service.transaction_created.connect(self.on_transaction_created)
+            self.bitcoin_service.transaction_broadcasted.connect(self.on_transaction_broadcast)
+            self.bitcoin_service.transaction_error.connect(self.on_transaction_error)
+            print("✅ Transaction page connected to Bitcoin service")
+    
+    def set_wallet_address(self, address, private_key_wif=None):
+        """Set the wallet address and private key for transactions."""
+        self.wallet_address = address
+        self.private_key_wif = private_key_wif
+        if address:
+            # Update the receive address display
+            if hasattr(self, 'receive_address_label'):
+                self.receive_address_label.setText(address)
+            print(f"📍 Transaction page using address: {address[:8]}...")
+    
+    def update_wallet_balance(self, address, balance_info):
+        """Update wallet balance from Bitcoin service."""
+        if address == self.wallet_address:
+            self.wallet_balance = balance_info.get('balance_btc', Decimal('0'))
+            self.balance_label.setText(f"Balance: {self.wallet_balance:.8f} BTC")
+            print(f"💰 Updated wallet balance: {self.wallet_balance:.8f} BTC")
+    
+    def update_transaction_history_from_blockchain(self, address, transactions):
+        """Update transaction history from blockchain data."""
+        if address == self.wallet_address:
+            # Convert blockchain transactions to display format
+            for tx in transactions:
+                if tx not in self.transaction_history:
+                    self.transaction_history.append(tx)
+            self.update_transaction_history_display()
+            print(f"📋 Updated transaction history: {len(transactions)} transactions")
+    
     def init_ui(self):
         """Initialize the transaction page UI."""
         main_layout = QVBoxLayout()
@@ -374,37 +418,128 @@ Note: This is a preview only. No transaction has been created yet."""
         return 0.00005000  # Default
     
     def send_transaction(self):
-        """Send the transaction (placeholder for now)."""
-        # Create transaction object
-        transaction = {
-            "recipient": self.recipient_input.text().strip(),
-            "amount": self.amount_input.value(),
-            "fee": self.get_selected_fee(),
-            "description": self.description_input.text().strip(),
-            "rbf": self.rbf_checkbox.isChecked(),
-            "timestamp": datetime.now().isoformat(),
-            "status": "pending",
-            "txid": f"pending_{len(self.transaction_history) + 1}"
-        }
+        """Send the transaction using Bitcoin Core."""
+        # Validate inputs
+        recipient = self.recipient_input.text().strip()
+        amount = self.amount_input.value()
+        description = self.description_input.text().strip()
+        
+        if not recipient:
+            QMessageBox.warning(self, "Error", "Please enter a recipient address.")
+            return
+        
+        if amount <= 0:
+            QMessageBox.warning(self, "Error", "Please enter a valid amount.")
+            return
+        
+        if amount > float(self.wallet_balance):
+            QMessageBox.warning(self, "Error", f"Insufficient funds. Available: {self.wallet_balance:.8f} BTC")
+            return
+        
+        if not self.bitcoin_service or not self.bitcoin_service.is_connected:
+            QMessageBox.warning(self, "Error", "Not connected to Bitcoin node.")
+            return
+        
+        if not self.wallet_address or not self.private_key_wif:
+            QMessageBox.warning(self, "Error", "Wallet address or private key not available.")
+            return
+        
+        # Get fee rate
+        fee_rate = self.get_selected_fee_rate()
+        
+        # Show confirmation dialog
+        msg = QMessageBox()
+        msg.setIcon(QMessageBox.Icon.Question)
+        msg.setWindowTitle("Confirm Transaction")
+        msg.setText(f"Send {amount:.8f} BTC to {recipient}?")
+        msg.setDetailedText(f"From: {self.wallet_address}\nTo: {recipient}\nAmount: {amount:.8f} BTC\nFee Rate: {fee_rate} sat/byte\nDescription: {description}")
+        msg.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        
+        if msg.exec() == QMessageBox.StandardButton.Yes:
+            # Disable send button to prevent double-spending
+            self.send_button.setEnabled(False)
+            self.send_button.setText("Sending...")
+            
+            # Convert fee rate from sat/byte to BTC/byte
+            fee_rate_btc = fee_rate / 100000000  # satoshis to BTC
+            
+            # Create and broadcast transaction using Bitcoin service
+            tx_id = self.bitcoin_service.create_and_send_transaction(
+                to_address=recipient,
+                amount=amount,
+                fee_rate=fee_rate_btc,
+                from_address=self.wallet_address
+            )
+            
+            if not tx_id:
+                # Transaction failed
+                self.send_button.setEnabled(True)
+                self.send_button.setText("Send Bitcoin")
+    
+    def get_selected_fee_rate(self):
+        """Get the selected fee rate in satoshis per byte."""
+        fee_text = self.fee_combo.currentText()
+        if fee_text == "Custom":
+            return self.custom_fee_input.value()
+        elif fee_text.startswith("Economy"):
+            return 1  # 1 sat/byte for slow confirmation
+        elif fee_text.startswith("Standard"):
+            return 5  # 5 sat/byte for normal confirmation
+        elif fee_text.startswith("Priority"):
+            return 20  # 20 sat/byte for fast confirmation
+        return 5  # Default
+    
+    def on_transaction_created(self, raw_tx_hex):
+        """Handle successful transaction creation."""
+        print(f"✅ Transaction created: {raw_tx_hex[:20]}...")
+    
+    def on_transaction_broadcast(self, tx_id):
+        """Handle successful transaction broadcast."""
+        self.send_button.setEnabled(True)
+        self.send_button.setText("Send Bitcoin")
         
         # Add to history
-        self.transaction_history.append(transaction)
+        recipient = self.recipient_input.text().strip()
+        amount = self.amount_input.value()
+        description = self.description_input.text().strip()
         
-        # Emit signal for future integration
-        self.transaction_created.emit(transaction)
+        tx_record = {
+            "txid": tx_id,
+            "recipient": recipient,
+            "amount": float(amount),
+            "fee": 0,  # We don't have fee info from the signal
+            "description": description,
+            "timestamp": datetime.now().isoformat(),
+            "status": "broadcast",
+            "type": "send"
+        }
+        self.transaction_history.append(tx_record)
         
-        # Show confirmation
+        # Show success message
         QMessageBox.information(
             self, 
-            "Transaction Created", 
-            f"Transaction created successfully!\n\nNote: This is a demo transaction. No actual Bitcoin was sent.\n\nTransaction ID: {transaction['txid']}"
+            "Transaction Sent!", 
+            f"Transaction broadcasted successfully!\n\nTransaction ID: {tx_id}\n\nThe transaction is now being processed by the Bitcoin network."
         )
         
         # Clear form
-        self.clear_send_form()
+        self.recipient_input.clear()
+        self.amount_input.setValue(0)
+        self.description_input.clear()
         
-        # Refresh history
-        self.load_transaction_history()
+        # Update history display
+        self.update_transaction_history_display()
+    
+    def on_transaction_error(self, error_message):
+        """Handle transaction error."""
+        self.send_button.setEnabled(True)
+        self.send_button.setText("Send Bitcoin")
+        
+        QMessageBox.critical(
+            self,
+            "Transaction Error",
+            f"Transaction failed:\n\n{error_message}"
+        )
     
     def clear_send_form(self):
         """Clear the send form."""
@@ -550,3 +685,7 @@ Note: This is a preview only. No transaction has been created yet."""
         self.balance_label.setText(f"Balance: {balance_btc:.8f} BTC")
         if balance_usd is not None:
             self.balance_usd_label.setText(f"≈ ${balance_usd:.2f} USD")
+    
+    def update_transaction_history_display(self):
+        """Update the transaction history display."""
+        self.load_transaction_history()
