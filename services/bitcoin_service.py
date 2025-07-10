@@ -38,6 +38,7 @@ class BitcoinService(QObject):
     # Address-specific signals
     address_balance_updated = pyqtSignal(str, dict)  # address, balance_info
     address_transactions_updated = pyqtSignal(str, list)  # address, transactions
+    address_performance_status = pyqtSignal(str, str)  # address, status_message
     
     # Transaction-related signals
     transaction_created = pyqtSignal(str)  # raw transaction hex
@@ -168,7 +169,15 @@ class BitcoinService(QObject):
             return True
         
     def connect_to_node(self):
-        """Establish connection to Bitcoin node with adaptive retry logic."""
+        """Establish connection to Bitcoin node with adaptive retry logic and no-node fallback."""
+        # Check if we should even try to connect
+        if hasattr(self, '_no_node_mode') and self._no_node_mode:
+            print("📍 Running in no-node mode - Bitcoin Core not available")
+            self.is_connected = False
+            self.connection_status_changed.emit(False)
+            self.status_message.emit("📍 No Bitcoin Core - Address monitoring only")
+            return False
+        
         for attempt in range(self.max_retries):
             try:
                 self.status_message.emit(f"Connecting... (attempt {attempt + 1}/{self.max_retries})")
@@ -205,6 +214,10 @@ class BitcoinService(QObject):
                 self.is_connected = True
                 self.consecutive_failures = 0
                 self.connection_status_changed.emit(True)
+                
+                # Reset no-node mode if we successfully connect
+                if hasattr(self, '_no_node_mode'):
+                    self._no_node_mode = False
                 
                 # Check if node is syncing
                 verification_progress = info.get('verificationprogress', 1.0)
@@ -253,11 +266,13 @@ class BitcoinService(QObject):
                 self.status_message.emit(f"Retrying in {wait_time} seconds...")
                 time.sleep(wait_time)
         
-        # All attempts failed
+        # All attempts failed - enable no-node mode
+        print("❌ All connection attempts failed - enabling no-node mode")
+        self._no_node_mode = True
         self.is_connected = False
         self.connection_status_changed.emit(False)
-        self.status_message.emit("❌ Failed to connect after all attempts")
-        self.error_occurred.emit("Failed to connect to Bitcoin node. Check if Bitcoin Core is running and RPC is properly configured.")
+        self.status_message.emit("📍 No Bitcoin Core found - Address monitoring disabled")
+        self.error_occurred.emit("No Bitcoin Core node found. Install Bitcoin Core or connect to a remote node for full functionality.")
         return False
     
     def disconnect(self):
@@ -277,21 +292,44 @@ class BitcoinService(QObject):
         """Start monitoring Bitcoin node for updates."""
         if not self.is_connected:
             if not self.connect_to_node():
+                # If connection failed, check if we're in no-node mode
+                if hasattr(self, '_no_node_mode') and self._no_node_mode:
+                    print("📍 Starting in no-node mode - address display only")
+                    # Still emit some basic info for UI
+                    mock_blockchain_info = {
+                        'chain': 'main',
+                        'blocks': 0,
+                        'headers': 0,
+                        'verificationprogress': 0.0,
+                        'bestblockhash': '',
+                        'difficulty': 0,
+                        'chainwork': '0'
+                    }
+                    self.blockchain_info_updated.emit(mock_blockchain_info)
+                    return True  # Return True so dashboard still starts
                 return False
         
-        # Start periodic updates
-        self.update_timer.start()
-        
-        # Start background monitoring thread
-        self.should_stop = False
-        self.worker_thread = threading.Thread(target=self._monitor_blocks, daemon=True)
-        self.worker_thread.start()
-        
-        print("🔍 Started monitoring Bitcoin node")
+        # Start periodic updates (only if connected)
+        if self.is_connected:
+            self.update_timer.start()
+            
+            # Start background monitoring thread
+            self.should_stop = False
+            self.worker_thread = threading.Thread(target=self._monitor_blocks, daemon=True)
+            self.worker_thread.start()
+            
+            print("🔍 Started monitoring Bitcoin node")
+        else:
+            print("📍 Started in no-node mode")
+            
         return True
     
     def update_data(self):
         """Update various Bitcoin node data with adaptive error handling for busy nodes."""
+        # Skip updates if in no-node mode
+        if hasattr(self, '_no_node_mode') and self._no_node_mode:
+            return
+            
         if not self.is_connected or not self.rpc_connection:
             return
         
@@ -596,6 +634,24 @@ class BitcoinService(QObject):
     
     def update_address_balance(self, address):
         """Update balance for a specific address with busy node handling."""
+        # In no-node mode, emit zero balance but don't spam errors
+        if hasattr(self, '_no_node_mode') and self._no_node_mode:
+            if not hasattr(self, '_no_node_message_shown'):
+                print(f"📍 No-node mode: Cannot check balance for {address[:8]}... - Bitcoin Core required")
+                self._no_node_message_shown = True
+            
+            balance_info = {
+                'balance_btc': Decimal('0'),
+                'balance_usd': 0.0,
+                'confirmed': Decimal('0'),
+                'unconfirmed': Decimal('0'),
+                'utxo_count': 0,
+                'last_updated': time.time(),
+                'error': 'No Bitcoin Core node available'
+            }
+            self.address_balance_updated.emit(address, balance_info)
+            return
+            
         if not self.is_connected or not self.rpc_connection:
             return
             
@@ -610,19 +666,39 @@ class BitcoinService(QObject):
             
             # For descriptor wallets and busy nodes, use scantxoutset with longer timeout
             try:
-                print(f"📊 Checking balance for {address[:8]}... (this may take a while on busy nodes)")
+                print(f"📊 Checking balance for {address[:8]}... (this may take 60+ seconds on slow nodes)")
+                start_time = time.time()
+                
                 scan_result = self._safe_rpc_call(
                     lambda: self.rpc_connection.scantxoutset("start", [f"addr({address})"]),
-                    timeout_override=90,  # Much longer timeout for scantxoutset
-                    max_retries=2
+                    timeout_override=120,  # 2 minute timeout for ultra-slow scantxoutset
+                    max_retries=1  # Don't retry slow operations
                 )
+                
+                elapsed_time = time.time() - start_time
+                
                 if scan_result:
                     balance_btc = Decimal(str(scan_result.get('total_amount', 0)))
                     utxo_count = len(scan_result.get('unspents', []))
-                    print(f"📊 Balance check complete: {balance_btc:.8f} BTC ({utxo_count} UTXOs)")
+                    
+                    # Track slow addresses to avoid frequent rechecks
+                    if elapsed_time > 20:  # If it took more than 20 seconds (reduced from 30)
+                        if not hasattr(self, '_slow_scan_addresses'):
+                            self._slow_scan_addresses = {}
+                        self._slow_scan_addresses[address] = time.time()
+                        print(f"⚠️ SLOW scantxoutset: {elapsed_time:.1f}s - will reduce frequency for this address")
+                        # Emit performance status update
+                        self.address_performance_status.emit(address, f"⏱️ Slow node - updates every 15min")
+                    
+                    print(f"📊 Balance check complete: {balance_btc:.8f} BTC ({utxo_count} UTXOs) in {elapsed_time:.1f}s")
                 else:
-                    print(f"⏳ Balance check timed out for {address[:8]}... - will retry later")
-                    # Don't emit signal if we couldn't get data
+                    print(f"⏳ Balance check timed out for {address[:8]}... after {elapsed_time:.1f}s")
+                    # Mark as slow to avoid immediate retry
+                    if not hasattr(self, '_slow_scan_addresses'):
+                        self._slow_scan_addresses = {}
+                    self._slow_scan_addresses[address] = time.time()
+                    # Emit performance status update
+                    self.address_performance_status.emit(address, f"⏱️ Slow node - updates every 15min")
                     return
                     
             except Exception as e:
@@ -836,7 +912,7 @@ class BitcoinService(QObject):
             self.address_transactions_updated.emit(address, [])
     
     def update_all_monitored_addresses(self):
-        """Update all monitored addresses with intelligent throttling for busy nodes."""
+        """Update all monitored addresses with intelligent throttling for busy nodes and slow scantxoutset."""
         if not self.monitored_addresses:
             return
             
@@ -872,7 +948,20 @@ class BitcoinService(QObject):
             current_address = address_list[self._address_update_rotation % len(address_list)]
             self._address_update_rotation += 1
             
-            print(f"📍 Updating address {self._address_update_rotation}/{len(address_list)}: {current_address[:8]}...")
+            # Check if this address is known to be slow
+            slow_addresses = getattr(self, '_slow_scan_addresses', {})
+            if current_address in slow_addresses:
+                time_since_last = time.time() - slow_addresses[current_address]
+                # For slow addresses, wait 15 minutes between checks instead of normal frequency
+                if time_since_last < 900:  # 15 minutes
+                    print(f"⏳ Skipping slow address {current_address[:8]}... (waiting {900-time_since_last:.0f}s)")
+                    # Emit throttling status
+                    self.address_performance_status.emit(current_address, f"⏳ Throttled - next check in {int((900-time_since_last)/60)}min")
+                    return
+                else:
+                    print(f"� Updating slow address {current_address[:8]}... (last update was {time_since_last/60:.1f} minutes ago)")
+            
+            print(f"�📍 Updating address {self._address_update_rotation}/{len(address_list)}: {current_address[:8]}...")
             self.update_address_balance(current_address)
             
             # Handle pending transaction updates (from balance changes)
@@ -882,8 +971,8 @@ class BitcoinService(QObject):
                     self.update_address_transactions(current_address)
                     self._pending_tx_updates.discard(current_address)
             
-            # Only update transactions occasionally (every 5th cycle for this address)
-            elif self._address_update_rotation % (len(address_list) * 5) == 0:
+            # Only update transactions occasionally (every 5th cycle for this address) and not for slow addresses
+            elif current_address not in slow_addresses and self._address_update_rotation % (len(address_list) * 5) == 0:
                 print(f"📋 Periodic transaction update for {current_address[:8]}...")
                 self.update_address_transactions(current_address)
     

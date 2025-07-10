@@ -108,6 +108,8 @@ class MainWindow(QMainWindow):
             profile_wallet.update_address_balance, Qt.ConnectionType.QueuedConnection)
         self.bitcoin_service.address_transactions_updated.connect(
             profile_wallet.update_address_transactions, Qt.ConnectionType.QueuedConnection)
+        self.bitcoin_service.address_performance_status.connect(
+            profile_wallet.update_performance_status, Qt.ConnectionType.QueuedConnection)
         
         # Connect Bitcoin service to transaction page
         self.transaction_page.set_bitcoin_service(self.bitcoin_service)

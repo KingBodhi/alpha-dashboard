@@ -50,10 +50,19 @@ class BitcoinWalletWidget(QWidget):
         self.balance_usd_label.setStyleSheet("color: #666; font-style: italic;")
         wallet_layout.addWidget(self.balance_usd_label)
         
-        # Status display
+        # Status display with performance indicator
+        status_layout = QHBoxLayout()
         self.status_label = QLabel("📍 Ready to monitor address")
         self.status_label.setStyleSheet("color: #666; font-size: 12px; padding: 5px;")
-        wallet_layout.addWidget(self.status_label)
+        status_layout.addWidget(self.status_label)
+        
+        # Performance status indicator
+        self.perf_status_label = QLabel("")
+        self.perf_status_label.setStyleSheet("color: #FF9800; font-size: 11px; font-style: italic;")
+        status_layout.addWidget(self.perf_status_label)
+        status_layout.addStretch()
+        
+        wallet_layout.addLayout(status_layout)
         
         # Sync status
         sync_layout = QHBoxLayout()
@@ -242,3 +251,16 @@ class BitcoinWalletWidget(QWidget):
     def get_address(self):
         """Get the current address."""
         return self.address
+    
+    @pyqtSlot(str, str)
+    def update_performance_status(self, address, status_message):
+        """Update the performance status indicator for slow addresses."""
+        if address != self.address:
+            return
+            
+        if status_message:
+            self.perf_status_label.setText(status_message)
+            self.perf_status_label.show()
+        else:
+            self.perf_status_label.setText("")
+            self.perf_status_label.hide()
