@@ -149,28 +149,66 @@ def diagnose_bitcoin_core_activity():
                 print(f"   ❌ {test_name}: {e}")
         print()
         
-        print("🎯 scantxoutset Test (your main issue)...")
+        print("🎯 Balance Check Performance Test...")
         test_address = "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"  # Known address with activity
+        
+        # Test 1: listunspent (wallet-based, fast)
+        print(f"   Testing listunspent method...")
         try:
-            print(f"   Testing scantxoutset with address: {test_address[:20]}...")
             start_time = time.time()
+            unspent_outputs = rpc.listunspent(0, 999999999)
+            listunspent_time = time.time() - start_time
             
-            # Use a known address that should have UTXOs
-            result = rpc.scantxoutset("start", [f"addr({test_address})"])
-            response_time = time.time() - start_time
+            # Filter for our test address
+            address_utxos = [utxo for utxo in unspent_outputs if utxo.get('address') == test_address]
+            total_balance = sum(utxo.get('amount', 0) for utxo in address_utxos)
             
-            if response_time > 30:
-                print(f"   ❌ scantxoutset: {response_time:.1f}s (VERY SLOW - this is your problem!)")
-            elif response_time > 10:
-                print(f"   ⚠️ scantxoutset: {response_time:.1f}s (slow)")
+            if listunspent_time > 5:
+                print(f"   ⚠️ listunspent: {listunspent_time:.2f}s (SLOW)")
+            elif listunspent_time > 1:
+                print(f"   🟡 listunspent: {listunspent_time:.2f}s (slow)")
             else:
-                print(f"   ✅ scantxoutset: {response_time:.1f}s")
+                print(f"   ✅ listunspent: {listunspent_time:.3f}s (FAST)")
+                
+            print(f"   Found {len(address_utxos)} UTXOs for test address, {total_balance:.8f} BTC total")
+            
+        except Exception as e:
+            print(f"   ❌ listunspent test failed: {e}")
+            listunspent_time = float('inf')
+        
+        # Test 2: scantxoutset (full UTXO scan, slow)
+        print(f"   Testing scantxoutset method...")
+        print(f"   ⚠️ WARNING: This may take 30-60+ seconds on slow nodes!")
+        try:
+            start_time = time.time()
+            result = rpc.scantxoutset("start", [f"addr({test_address})"])
+            scantxoutset_time = time.time() - start_time
+            
+            if scantxoutset_time > 30:
+                print(f"   ❌ scantxoutset: {scantxoutset_time:.1f}s (VERY SLOW)")
+            elif scantxoutset_time > 10:
+                print(f"   ⚠️ scantxoutset: {scantxoutset_time:.1f}s (slow)")
+            else:
+                print(f"   ✅ scantxoutset: {scantxoutset_time:.1f}s")
                 
             if result:
                 print(f"   Found: {result.get('total_amount', 0):.8f} BTC in {len(result.get('unspents', []))} UTXOs")
                 
         except Exception as e:
             print(f"   ❌ scantxoutset test failed: {e}")
+            scantxoutset_time = float('inf')
+        
+        # Performance comparison
+        if listunspent_time != float('inf') and scantxoutset_time != float('inf'):
+            speedup = scantxoutset_time / listunspent_time
+            print(f"   📊 Performance: listunspent is {speedup:.1f}x faster than scantxoutset")
+            
+            if speedup > 100:
+                print(f"   🚀 EXCELLENT: listunspent is dramatically faster - dashboard will be very responsive")
+            elif speedup > 10:
+                print(f"   ✅ GOOD: listunspent provides significant speedup")
+            else:
+                print(f"   ⚠️ MODERATE: Both methods are relatively slow on this node")
         print()
         
         print("📈 Continuous Monitoring (30 seconds)...")
