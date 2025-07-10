@@ -4,6 +4,7 @@ import time
 import platform
 import os
 import logging
+from datetime import datetime
 from decimal import Decimal
 from PyQt6.QtCore import QObject, pyqtSignal, QTimer
 from bitcoinrpc.authproxy import AuthServiceProxy, JSONRPCException
@@ -209,6 +210,11 @@ class BitcoinService(QObject):
                 print(f"📊 Chain: {info.get('chain', 'unknown')}")
                 print(f"📦 Blocks: {info.get('blocks', 0)}")
                 
+                # Ensure a wallet is loaded for transaction operations
+                wallet_loaded = self.ensure_wallet_loaded()
+                if not wallet_loaded:
+                    print("⚠️ Warning: No wallet loaded - transaction features will be limited")
+                
                 # Detect wallet type
                 self._detect_wallet_type()
                 
@@ -359,9 +365,27 @@ class BitcoinService(QObject):
             return result
             
         except JSONRPCException as e:
-            # Just return None silently for common busy node errors
+            # Handle specific wallet-related errors
             error_msg = str(e)
-            if any(x in error_msg for x in ["Request-sent", "Work queue", "timeout", "busy"]):
+            if "no wallet is loaded" in error_msg.lower():
+                print("⚠️ RPC call failed: No wallet loaded")
+                # Try to ensure wallet is loaded and retry once
+                if hasattr(self, '_wallet_retry_count'):
+                    self._wallet_retry_count += 1
+                else:
+                    self._wallet_retry_count = 1
+                
+                if self._wallet_retry_count <= 1:  # Only retry once
+                    if self.ensure_wallet_loaded():
+                        print("🔄 Retrying RPC call after loading wallet...")
+                        return self._safe_rpc_call(rpc_func_or_method, params, timeout_override)
+                
+                # Reset retry counter
+                self._wallet_retry_count = 0
+                return None
+            
+            # Just return None silently for common busy node errors
+            elif any(x in error_msg for x in ["Request-sent", "Work queue", "timeout", "busy"]):
                 return None
             # Only log unexpected errors
             print(f"RPC Error: {e.error.get('message', error_msg) if hasattr(e, 'error') else error_msg}")
@@ -509,7 +533,10 @@ class BitcoinService(QObject):
                     print(f"📊 scantxoutset result for {address}: {balance_btc:.8f} BTC ({utxo_count} UTXOs)")
                 else:
                     # This is normal - address might be new or node might be busy
-                    print(f"📍 scantxoutset: no UTXOs found for {address[:8]}... (trying alternative method)")
+                    if not hasattr(self, f'_first_empty_check_{address}'):
+                        print(f"📍 Address {address[:8]}... has no UTXOs (new address or all funds spent)")
+                        setattr(self, f'_first_empty_check_{address}', True)
+                    # Don't spam the console with repeated empty checks
                     
             except Exception as e:
                 # Check if it's a "node busy" or expected error
@@ -614,24 +641,110 @@ class BitcoinService(QObject):
             return
             
         try:
-            # Get transactions for this address
-            # Note: This requires the address to be in the wallet or using a block explorer API
             transactions = []
             
-            # For now, we'll create placeholder transactions when balance changes
-            # In a full implementation, this would scan the blockchain or use an API
+            # Method 1: Try to get transactions from wallet if address is imported
+            try:
+                # Get wallet transactions
+                wallet_txs = self._safe_rpc_call(lambda: self.rpc_connection.listtransactions("*", 1000))
+                if wallet_txs:
+                    # Filter transactions for our address
+                    for tx in wallet_txs:
+                        if tx.get('address') == address:
+                            formatted_tx = {
+                                'txid': tx.get('txid', ''),
+                                'amount': abs(float(tx.get('amount', 0))),
+                                'fee': abs(float(tx.get('fee', 0))) if tx.get('fee') else 0,
+                                'confirmations': tx.get('confirmations', 0),
+                                'time': tx.get('time', int(time.time())),
+                                'timestamp': datetime.fromtimestamp(tx.get('time', int(time.time()))).isoformat(),
+                                'type': 'receive' if tx.get('amount', 0) > 0 else 'send',
+                                'address': address,
+                                'category': tx.get('category', ''),
+                                'blockhash': tx.get('blockhash', ''),
+                                'blockindex': tx.get('blockindex', 0),
+                                'blocktime': tx.get('blocktime', 0),
+                                'status': 'confirmed' if tx.get('confirmations', 0) >= 6 else 'pending'
+                            }
+                            transactions.append(formatted_tx)
+                    
+                    print(f"📋 Found {len(transactions)} wallet transactions for {address[:8]}...")
+                    
+            except Exception as wallet_error:
+                print(f"⚠️ Could not get wallet transactions: {wallet_error}")
+                
+                # Method 2: Try to scan recent blocks for transactions to this address
+                try:
+                    # Get recent blocks and scan for transactions
+                    best_block_hash = self._safe_rpc_call(lambda: self.rpc_connection.getbestblockhash())
+                    if best_block_hash:
+                        # Scan last 10 blocks for transactions
+                        current_hash = best_block_hash
+                        for i in range(10):
+                            block = self._safe_rpc_call(lambda: self.rpc_connection.getblock(current_hash, 2))
+                            if block and 'tx' in block:
+                                for tx in block['tx']:
+                                    # Check if transaction involves our address
+                                    tx_involves_address = False
+                                    tx_amount = 0
+                                    
+                                    # Check outputs
+                                    for vout in tx.get('vout', []):
+                                        script_pub_key = vout.get('scriptPubKey', {})
+                                        addresses = script_pub_key.get('addresses', [])
+                                        if address in addresses:
+                                            tx_involves_address = True
+                                            tx_amount += vout.get('value', 0)
+                                    
+                                    if tx_involves_address:
+                                        formatted_tx = {
+                                            'txid': tx.get('txid', ''),
+                                            'amount': tx_amount,
+                                            'fee': 0,  # Fee calculation would require input analysis
+                                            'confirmations': block.get('confirmations', 0),
+                                            'time': block.get('time', int(time.time())),
+                                            'timestamp': datetime.fromtimestamp(block.get('time', int(time.time()))).isoformat(),
+                                            'type': 'receive',  # Assuming receive for simplicity
+                                            'address': address,
+                                            'blockhash': block.get('hash', ''),
+                                            'blockindex': block.get('height', 0),
+                                            'blocktime': block.get('time', 0),
+                                            'status': 'confirmed'
+                                        }
+                                        transactions.append(formatted_tx)
+                                
+                                # Move to previous block
+                                current_hash = block.get('previousblockhash')
+                                if not current_hash:
+                                    break
+                        
+                        print(f"📋 Found {len(transactions)} blockchain transactions for {address[:8]}...")
+                        
+                except Exception as block_error:
+                    print(f"⚠️ Could not scan blockchain: {block_error}")
             
-            if address in self.address_balances and self.address_balances[address] > 0:
-                # Create a placeholder transaction
-                placeholder_tx = {
-                    'txid': f'demo_tx_{address[:8]}',
-                    'amount': self.address_balances[address],
-                    'confirmations': 6,
-                    'time': int(time.time()),
-                    'type': 'receive',
-                    'address': address
-                }
-                transactions = [placeholder_tx]
+            # Update stored transactions and emit signal
+            if address not in self.address_transactions:
+                self.address_transactions[address] = []
+            
+            # Merge new transactions with existing ones (avoid duplicates)
+            existing_txids = {tx.get('txid') for tx in self.address_transactions[address]}
+            new_transactions = [tx for tx in transactions if tx.get('txid') not in existing_txids]
+            
+            if new_transactions:
+                self.address_transactions[address].extend(new_transactions)
+                print(f"📋 Added {len(new_transactions)} new transactions for {address[:8]}...")
+            
+            # Sort by time (newest first)
+            self.address_transactions[address].sort(key=lambda x: x.get('time', 0), reverse=True)
+            
+            # Emit signal with updated transactions
+            self.address_transactions_updated.emit(address, self.address_transactions[address])
+                
+        except Exception as e:
+            print(f"❌ Error updating transactions for {address}: {e}")
+            # Emit empty list to avoid UI hanging
+            self.address_transactions_updated.emit(address, [])
             
             self.address_transactions[address] = transactions
             self.address_transactions_updated.emit(address, transactions)
@@ -659,7 +772,12 @@ class BitcoinService(QObject):
         self.node_busy = False
         for address in list(self.monitored_addresses):
             self.update_address_balance(address)
-            self.update_address_transactions(address)
+            # Update transactions periodically (every 3rd update to reduce load)
+            if not hasattr(self, '_tx_update_counter'):
+                self._tx_update_counter = 0
+            self._tx_update_counter += 1
+            if self._tx_update_counter % 3 == 0:  # Update transactions every 3rd cycle
+                self.update_address_transactions(address)
     
     def _adjust_update_frequency(self, success=True):
         """Dynamically adjust update frequency based on node responsiveness."""
@@ -702,9 +820,25 @@ class BitcoinService(QObject):
     
     def estimate_fee(self, target_blocks=6):
         """Estimate transaction fee for confirmation in target blocks"""
+        if not self.is_connected:
+            print("❌ Not connected to Bitcoin node")
+            return None
+        
         try:
+            # Ensure wallet is loaded before fee estimation
+            if not self.ensure_wallet_loaded():
+                print("⚠️ Using fallback fee estimation (no wallet loaded)")
+                # Return a reasonable fallback fee rate
+                fallback_fee_data = {
+                    'feerate': 0.00001000,  # 1000 sat/kB
+                    'blocks': target_blocks,
+                    'errors': ['Using fallback fee - no wallet loaded']
+                }
+                self.fee_estimated.emit(fallback_fee_data)
+                return fallback_fee_data
+            
             # Try smart fee estimation first
-            result = self._safe_rpc_call('estimatesmartfee', [target_blocks])
+            result = self._safe_rpc_call(lambda: self.rpc_connection.estimatesmartfee(target_blocks))
             if result and 'feerate' in result:
                 fee_data = {
                     'feerate': result['feerate'],
@@ -715,7 +849,7 @@ class BitcoinService(QObject):
                 return fee_data
             
             # Fallback to older method
-            result = self._safe_rpc_call('estimatefee', [target_blocks])
+            result = self._safe_rpc_call(lambda: self.rpc_connection.estimatefee(target_blocks))
             if result and result > 0:
                 fee_data = {
                     'feerate': result,
@@ -938,3 +1072,57 @@ class BitcoinService(QObject):
         except Exception as e:
             print(f"⚠️ Could not detect wallet type: {e}")
             self.is_descriptor_wallet = False
+    
+    def ensure_wallet_loaded(self):
+        """Ensure a wallet is loaded for transaction operations."""
+        try:
+            # Try to get wallet info to check if a wallet is loaded
+            wallet_info = self._safe_rpc_call(lambda: self.rpc_connection.getwalletinfo())
+            if wallet_info:
+                print(f"✅ Wallet loaded: {wallet_info.get('walletname', 'default')}")
+                return True
+        except Exception as e:
+            error_str = str(e).lower()
+            if "no wallet is loaded" in error_str:
+                print("📝 No wallet loaded, attempting to create/load wallet...")
+                
+                # Try to list existing wallets first
+                try:
+                    wallet_list = self._safe_rpc_call(lambda: self.rpc_connection.listwalletdir())
+                    if wallet_list and wallet_list.get('wallets'):
+                        # Load the first available wallet
+                        first_wallet = wallet_list['wallets'][0]['name']
+                        load_result = self._safe_rpc_call(lambda: self.rpc_connection.loadwallet(first_wallet))
+                        if load_result:
+                            print(f"✅ Loaded existing wallet: {first_wallet}")
+                            return True
+                except Exception as load_error:
+                    print(f"⚠️ Could not load existing wallet: {load_error}")
+                
+                # Create a new wallet if no existing wallet can be loaded
+                try:
+                    # Create a descriptor wallet (modern Bitcoin Core)
+                    # Parameters: wallet_name, disable_private_keys, blank, passphrase, avoid_reuse, descriptors, load_on_startup
+                    create_result = self._safe_rpc_call(
+                        lambda: self.rpc_connection.createwallet("dashboard_wallet", False, False, "", False, True, True)
+                    )
+                    if create_result:
+                        print("✅ Created new dashboard wallet")
+                        return True
+                except Exception as create_error:
+                    create_error_str = str(create_error).lower()
+                    if "already exists" in create_error_str:
+                        # Wallet exists but wasn't loaded, try to load it
+                        try:
+                            load_result = self._safe_rpc_call(lambda: self.rpc_connection.loadwallet("dashboard_wallet"))
+                            if load_result:
+                                print("✅ Loaded existing dashboard wallet")
+                                return True
+                        except Exception as load_error2:
+                            print(f"❌ Could not load existing dashboard wallet: {load_error2}")
+                    else:
+                        print(f"❌ Could not create wallet: {create_error}")
+            else:
+                print(f"❌ Wallet check failed: {e}")
+        
+        return False

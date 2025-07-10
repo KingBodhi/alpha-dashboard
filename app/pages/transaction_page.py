@@ -71,12 +71,29 @@ class TransactionPage(QWidget):
     def update_transaction_history_from_blockchain(self, address, transactions):
         """Update transaction history from blockchain data."""
         if address == self.wallet_address:
+            # Clear existing history and replace with blockchain data
+            self.transaction_history.clear()
+            
             # Convert blockchain transactions to display format
             for tx in transactions:
-                if tx not in self.transaction_history:
-                    self.transaction_history.append(tx)
+                display_tx = {
+                    "txid": tx.get('txid', ''),
+                    "amount": tx.get('amount', 0),
+                    "fee": tx.get('fee', 0),
+                    "description": f"{tx.get('type', 'unknown').title()} transaction",
+                    "timestamp": tx.get('timestamp', ''),
+                    "status": tx.get('status', 'unknown'),
+                    "type": tx.get('type', 'unknown'),
+                    "confirmations": tx.get('confirmations', 0),
+                    "blockhash": tx.get('blockhash', ''),
+                    "address": tx.get('address', ''),
+                    "category": tx.get('category', '')
+                }
+                self.transaction_history.append(display_tx)
+            
+            # Update the display
             self.update_transaction_history_display()
-            print(f"📋 Updated transaction history: {len(transactions)} transactions")
+            print(f"📋 Updated transaction history from blockchain: {len(transactions)} transactions")
     
     def init_ui(self):
         """Initialize the transaction page UI with deferred loading."""
@@ -477,7 +494,23 @@ Note: This is a preview only. No transaction has been created yet."""
             return
         
         if not self.bitcoin_service or not self.bitcoin_service.is_connected:
-            QMessageBox.warning(self, "Error", "Not connected to Bitcoin node.")
+            QMessageBox.warning(self, "Error", "Not connected to Bitcoin node. Please check your connection.")
+            return
+        
+        # Check if wallet is loaded on the Bitcoin node
+        try:
+            if hasattr(self.bitcoin_service, 'ensure_wallet_loaded'):
+                wallet_loaded = self.bitcoin_service.ensure_wallet_loaded()
+                if not wallet_loaded:
+                    QMessageBox.warning(
+                        self, 
+                        "Wallet Error", 
+                        "No wallet is loaded on the Bitcoin node. Please create or load a wallet first.\n\n"
+                        "You can run: bitcoin-cli createwallet \"dashboard_wallet\""
+                    )
+                    return
+        except Exception as e:
+            QMessageBox.warning(self, "Wallet Error", f"Error checking wallet status: {e}")
             return
         
         if not self.wallet_address or not self.private_key_wif:
@@ -613,11 +646,49 @@ Note: This is a preview only. No transaction has been created yet."""
         """Deferred transaction history loading."""
         self.transaction_list.clear()
         
+        if not self.transaction_history:
+            # Show message if no transactions
+            item = QListWidgetItem("No transactions found. Click 'Refresh' to load from blockchain.")
+            item.setData(Qt.ItemDataRole.UserRole, None)
+            self.transaction_list.addItem(item)
+            return
+        
         for tx in self.transaction_history:
-            status_icon = "⏳" if tx.get("status") == "pending" else "✅" if tx.get("status") == "confirmed" else "❌"
-            type_icon = "📤" if "recipient" in tx else "📥"
+            # Determine status icon
+            confirmations = tx.get("confirmations", 0)
+            if confirmations >= 6:
+                status_icon = "✅"
+                status_text = "Confirmed"
+            elif confirmations > 0:
+                status_icon = "⏳" 
+                status_text = f"{confirmations} conf"
+            else:
+                status_icon = "❓"
+                status_text = "Unconfirmed"
             
-            item_text = f"{status_icon} {type_icon} {tx.get('amount', 0):.8f} BTC - {tx.get('description', 'No description')}"
+            # Determine transaction type icon
+            tx_type = tx.get("type", "unknown")
+            if tx_type == "receive" or tx.get("category") == "receive":
+                type_icon = "�"
+                type_text = "Received"
+            elif tx_type == "send" or tx.get("category") == "send":
+                type_icon = "📤" 
+                type_text = "Sent"
+            else:
+                type_icon = "🔄"
+                type_text = "Transaction"
+            
+            # Format amount
+            amount = tx.get('amount', 0)
+            if isinstance(amount, str):
+                try:
+                    amount = float(amount)
+                except:
+                    amount = 0
+            
+            # Create display text
+            txid = tx.get('txid', 'Unknown')[:16] + "..." if tx.get('txid') else "Unknown"
+            item_text = f"{status_icon} {type_icon} {type_text}: {amount:.8f} BTC ({status_text}) - {txid}"
             
             item = QListWidgetItem(item_text)
             item.setData(Qt.ItemDataRole.UserRole, tx)
@@ -625,8 +696,28 @@ Note: This is a preview only. No transaction has been created yet."""
     
     def refresh_transaction_history(self):
         """Refresh transaction history from the blockchain."""
-        # Placeholder - would integrate with Bitcoin service
-        QMessageBox.information(self, "Refresh", "Transaction history refresh will be implemented when connected to the blockchain.")
+        if not self.bitcoin_service or not self.bitcoin_service.is_connected:
+            QMessageBox.warning(self, "Error", "Not connected to Bitcoin node.")
+            return
+        
+        if not self.wallet_address:
+            QMessageBox.warning(self, "Error", "No wallet address available.")
+            return
+        
+        # Show loading state
+        self.refresh_button.setText("Refreshing...")
+        self.refresh_button.setEnabled(False)
+        
+        # Request transaction history from blockchain
+        try:
+            # Use the Bitcoin service to get transaction history for our address
+            self.bitcoin_service.update_address_transactions(self.wallet_address)
+            QMessageBox.information(self, "Success", "Transaction history refreshed from blockchain.")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to refresh transaction history: {e}")
+        finally:
+            self.refresh_button.setText("Refresh")
+            self.refresh_button.setEnabled(True)
     
     def export_transaction_history(self):
         """Export transaction history to CSV."""
