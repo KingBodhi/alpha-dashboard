@@ -708,11 +708,32 @@ Note: This is a preview only. No transaction has been created yet."""
         self.refresh_button.setText("Refreshing...")
         self.refresh_button.setEnabled(False)
         
-        # Request transaction history from blockchain
         try:
-            # Use the Bitcoin service to get transaction history for our address
+            # Force immediate update of both balance and transactions
+            print(f"🔄 Forcing refresh for address: {self.wallet_address}")
+            
+            # Update balance first (this might detect new UTXOs)
+            self.bitcoin_service.update_address_balance(self.wallet_address)
+            
+            # Then force transaction update
             self.bitcoin_service.update_address_transactions(self.wallet_address)
-            QMessageBox.information(self, "Success", "Transaction history refreshed from blockchain.")
+            
+            # Also try to rescan if possible
+            try:
+                if hasattr(self.bitcoin_service, '_safe_rpc_call'):
+                    # Try to rescan the last few blocks
+                    current_height = self.bitcoin_service.last_blockchain_info.get('blocks', 0)
+                    start_height = max(0, current_height - 100)  # Scan last 100 blocks
+                    rescan_result = self.bitcoin_service._safe_rpc_call(
+                        lambda: self.bitcoin_service.rpc_connection.rescanblockchain(start_height)
+                    )
+                    if rescan_result:
+                        print(f"🔍 Rescanned blocks {start_height} to {current_height}")
+            except Exception as rescan_error:
+                print(f"⚠️ Could not rescan: {rescan_error}")
+            
+            QMessageBox.information(self, "Success", "Transaction history refresh initiated. Please wait a moment for updates to appear.")
+            
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to refresh transaction history: {e}")
         finally:

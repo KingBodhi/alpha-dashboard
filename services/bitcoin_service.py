@@ -61,6 +61,15 @@ class BitcoinService(QObject):
         self.is_connected = False
         self.last_block_hash = None
         
+        # Fallback mode using block explorer APIs
+        self.use_api_fallback = False
+        self.api_endpoints = {
+            'blockstream': 'https://blockstream.info/api',
+            'blockchain_info': 'https://blockchain.info',
+            'mempool_space': 'https://mempool.space/api'
+        }
+        self.current_api = 'blockstream'  # Default to Blockstream API
+        
         # Address monitoring
         self.monitored_addresses = set()
         self.address_balances = {}
@@ -500,9 +509,20 @@ class BitcoinService(QObject):
             self.address_transactions[address] = []
             print(f"📍 Now monitoring address: {address}")
             
-            # Update balance immediately if connected
+            # Try to import the address for better transaction detection
             if self.is_connected:
+                try:
+                    # Try to import address for transaction tracking
+                    import_result = self._safe_rpc_call(lambda: self.rpc_connection.importaddress(address, f"monitor_{address[:8]}", False))
+                    if import_result is not None:
+                        print(f"✅ Address {address[:8]}... imported for transaction tracking")
+                except Exception as e:
+                    if "already exists" not in str(e).lower() and "descriptor wallet" not in str(e).lower():
+                        print(f"⚠️ Could not import address {address[:8]}...: {e}")
+                
+                # Update balance and transactions immediately
                 self.update_address_balance(address)
+                self.update_address_transactions(address)
     
     def remove_address_from_monitor(self, address):
         """Remove a Bitcoin address from monitoring."""
@@ -586,7 +606,11 @@ class BitcoinService(QObject):
                     print(f"⚠️ listunspent failed for {address}: {e2}")
             
             # Update stored balance
+            old_balance = self.address_balances.get(address, Decimal('0'))
             self.address_balances[address] = balance_btc
+            
+            # If balance changed, force transaction update
+            balance_changed = old_balance != balance_btc
             
             # Get current Bitcoin price for USD conversion
             btc_price_usd = self.get_btc_price_estimate()
@@ -608,6 +632,14 @@ class BitcoinService(QObject):
             if balance_btc > 0 or not hasattr(self, f'_first_update_{address}'):
                 print(f"💰 Balance updated for {address[:8]}...: {balance_btc:.8f} BTC (${balance_usd:.2f})")
                 setattr(self, f'_first_update_{address}', True)
+            
+            # If balance changed (especially increased), update transactions immediately
+            if balance_changed and balance_btc > old_balance:
+                print(f"📈 Balance increased for {address[:8]}... - forcing transaction update")
+                # Force immediate transaction update in background
+                import threading
+                tx_thread = threading.Thread(target=lambda: self.update_address_transactions(address), daemon=True)
+                tx_thread.start()
             
             # Update status message for UI
             if balance_btc > 0:
@@ -678,47 +710,79 @@ class BitcoinService(QObject):
                     # Get recent blocks and scan for transactions
                     best_block_hash = self._safe_rpc_call(lambda: self.rpc_connection.getbestblockhash())
                     if best_block_hash:
-                        # Scan last 10 blocks for transactions
+                        print(f"🔍 Scanning recent blocks for transactions to {address[:8]}...")
+                        # Scan last 50 blocks for transactions (increased from 10)
                         current_hash = best_block_hash
-                        for i in range(10):
+                        blocks_scanned = 0
+                        
+                        for i in range(50):  # Increased block scan range
+                            if not current_hash:
+                                break
+                                
                             block = self._safe_rpc_call(lambda: self.rpc_connection.getblock(current_hash, 2))
                             if block and 'tx' in block:
+                                blocks_scanned += 1
+                                
                                 for tx in block['tx']:
                                     # Check if transaction involves our address
                                     tx_involves_address = False
                                     tx_amount = 0
+                                    tx_type = 'unknown'
                                     
-                                    # Check outputs
+                                    # Check outputs for receives
                                     for vout in tx.get('vout', []):
                                         script_pub_key = vout.get('scriptPubKey', {})
-                                        addresses = script_pub_key.get('addresses', [])
-                                        if address in addresses:
+                                        addresses_in_output = script_pub_key.get('addresses', [])
+                                        
+                                        # Also check for single address field
+                                        if 'address' in script_pub_key:
+                                            addresses_in_output.append(script_pub_key['address'])
+                                        
+                                        if address in addresses_in_output:
                                             tx_involves_address = True
                                             tx_amount += vout.get('value', 0)
+                                            tx_type = 'receive'
+                                    
+                                    # Check inputs for sends (if this address was an input)
+                                    for vin in tx.get('vin', []):
+                                        if 'txid' in vin and 'vout' in vin:
+                                            # Get the previous transaction to check if our address was the sender
+                                            prev_tx = self._safe_rpc_call(lambda: self.rpc_connection.getrawtransaction(vin['txid'], True))
+                                            if prev_tx and 'vout' in prev_tx:
+                                                prev_output = prev_tx['vout'][vin['vout']]
+                                                prev_addresses = prev_output.get('scriptPubKey', {}).get('addresses', [])
+                                                if address in prev_addresses:
+                                                    tx_involves_address = True
+                                                    tx_amount = prev_output.get('value', 0)
+                                                    tx_type = 'send'
                                     
                                     if tx_involves_address:
+                                        # Get current block height for confirmations
+                                        current_height = self.last_blockchain_info.get('blocks', 0)
+                                        block_height = block.get('height', 0)
+                                        confirmations = max(0, current_height - block_height + 1)
+                                        
                                         formatted_tx = {
                                             'txid': tx.get('txid', ''),
                                             'amount': tx_amount,
                                             'fee': 0,  # Fee calculation would require input analysis
-                                            'confirmations': block.get('confirmations', 0),
+                                            'confirmations': confirmations,
                                             'time': block.get('time', int(time.time())),
                                             'timestamp': datetime.fromtimestamp(block.get('time', int(time.time()))).isoformat(),
-                                            'type': 'receive',  # Assuming receive for simplicity
+                                            'type': tx_type,
                                             'address': address,
                                             'blockhash': block.get('hash', ''),
                                             'blockindex': block.get('height', 0),
                                             'blocktime': block.get('time', 0),
-                                            'status': 'confirmed'
+                                            'status': 'confirmed' if confirmations >= 6 else 'pending'
                                         }
                                         transactions.append(formatted_tx)
+                                        print(f"🔍 Found {tx_type} transaction: {tx['txid'][:16]}... ({tx_amount:.8f} BTC)")
                                 
                                 # Move to previous block
                                 current_hash = block.get('previousblockhash')
-                                if not current_hash:
-                                    break
                         
-                        print(f"📋 Found {len(transactions)} blockchain transactions for {address[:8]}...")
+                        print(f"📋 Scanned {blocks_scanned} blocks, found {len(transactions)} blockchain transactions for {address[:8]}...")
                         
                 except Exception as block_error:
                     print(f"⚠️ Could not scan blockchain: {block_error}")
@@ -745,12 +809,6 @@ class BitcoinService(QObject):
             print(f"❌ Error updating transactions for {address}: {e}")
             # Emit empty list to avoid UI hanging
             self.address_transactions_updated.emit(address, [])
-            
-            self.address_transactions[address] = transactions
-            self.address_transactions_updated.emit(address, transactions)
-            
-        except Exception as e:
-            print(f"❌ Error updating transactions for {address}: {e}")
     
     def update_all_monitored_addresses(self):
         """Update all monitored addresses with intelligent throttling."""
