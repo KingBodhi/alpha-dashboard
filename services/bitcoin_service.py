@@ -291,13 +291,26 @@ class BitcoinService(QObject):
         return True
     
     def update_data(self):
-        """Update various Bitcoin node data with adaptive error handling."""
+        """Update various Bitcoin node data with adaptive error handling for busy nodes."""
         if not self.is_connected or not self.rpc_connection:
             return
         
         try:
+            # For very busy nodes, only try the most essential call
+            if getattr(self, 'node_busy', False) and getattr(self, '_rpc_failure_count', 0) > 10:
+                # Ultra-minimal mode for extremely busy nodes
+                print("⏳ Node extremely busy - using minimal mode")
+                blockchain_info = self._safe_rpc_call(self.rpc_connection.getblockchaininfo, timeout_override=60, max_retries=1)
+                if blockchain_info:
+                    self.last_blockchain_info = blockchain_info
+                    self.blockchain_info_updated.emit(blockchain_info)
+                    self.status_message.emit("⏳ Node very busy - minimal updates only")
+                else:
+                    self.status_message.emit("❌ Node too busy - waiting...")
+                return
+            
             # Always try to get blockchain info first
-            blockchain_info = self._safe_rpc_call(self.rpc_connection.getblockchaininfo)
+            blockchain_info = self._safe_rpc_call(self.rpc_connection.getblockchaininfo, timeout_override=45, max_retries=2)
             if blockchain_info:
                 self.last_blockchain_info = blockchain_info
                 self.blockchain_info_updated.emit(blockchain_info)
@@ -320,93 +333,142 @@ class BitcoinService(QObject):
             else:
                 # Failed to get blockchain info - node may be busy
                 self._adjust_update_frequency(success=False)
-                self.status_message.emit("⚠️ Bitcoin Core is busy - reducing update frequency")
+                self.status_message.emit("⚠️ Bitcoin Core is very busy - reducing update frequency")
                 return
             
-            # Only get other info if node is not busy
-            if not self.node_busy:
-                # Get network info
-                network_info = self._safe_rpc_call(self.rpc_connection.getnetworkinfo)
-                if network_info:
-                    self.network_info_updated.emit(network_info)
+            # Only get other info if node is not busy and we're not in failure mode
+            if not self.node_busy and getattr(self, '_rpc_failure_count', 0) < 5:
+                # Reduce load by alternating between different types of info
+                update_cycle = getattr(self, '_update_cycle', 0)
+                self._update_cycle = (update_cycle + 1) % 4
                 
-                # Get mempool info
-                mempool_info = self._safe_rpc_call(self.rpc_connection.getmempoolinfo)
-                if mempool_info:
-                    self.mempool_updated.emit(mempool_info)
-                
-                # Get peer info (limit to prevent UI overload)
-                peer_info = self._safe_rpc_call(
-                    lambda: self.rpc_connection.getpeerinfo()[:UI_CONFIG["max_peers_display"]]
-                )
-                if peer_info:
-                    self.peer_info_updated.emit(peer_info)
-                
-                # Update monitored addresses
-                self.update_all_monitored_addresses()
+                if update_cycle == 0:
+                    # Cycle 0: Network info
+                    network_info = self._safe_rpc_call(self.rpc_connection.getnetworkinfo, max_retries=1)
+                    if network_info:
+                        self.network_info_updated.emit(network_info)
+                elif update_cycle == 1:
+                    # Cycle 1: Mempool info
+                    mempool_info = self._safe_rpc_call(self.rpc_connection.getmempoolinfo, max_retries=1)
+                    if mempool_info:
+                        self.mempool_updated.emit(mempool_info)
+                elif update_cycle == 2:
+                    # Cycle 2: Peer info (reduced count)
+                    peer_info = self._safe_rpc_call(
+                        lambda: self.rpc_connection.getpeerinfo()[:5],  # Reduced from max_peers_display
+                        max_retries=1
+                    )
+                    if peer_info:
+                        self.peer_info_updated.emit(peer_info)
+                elif update_cycle == 3:
+                    # Cycle 3: Address updates (only if we have monitored addresses)
+                    if self.monitored_addresses:
+                        self.update_all_monitored_addresses()
             
         except Exception as e:
             self._handle_update_error(e)
     
-    def _safe_rpc_call(self, rpc_func_or_method, params=None, timeout_override=None):
-        """Make RPC call with timeout and error handling."""
-        try:
-            timeout = timeout_override or self.base_timeout
-            
-            # Handle both callable functions and method names with parameters
-            start_time = time.time()
-            if callable(rpc_func_or_method):
-                result = rpc_func_or_method()
-            else:
-                # Method name with parameters
-                method = getattr(self.rpc_connection, rpc_func_or_method)
-                if params:
-                    result = method(*params)
-                else:
-                    result = method()
-            
-            call_time = time.time() - start_time
-            
-            # Track slow calls
-            if call_time > self.slow_call_threshold:
-                print(f"⚠️ Slow RPC call: {call_time:.1f}s")
-            
-            return result
-            
-        except JSONRPCException as e:
-            # Handle specific wallet-related errors
-            error_msg = str(e)
-            if "no wallet is loaded" in error_msg.lower():
-                print("⚠️ RPC call failed: No wallet loaded")
-                # Try to ensure wallet is loaded and retry once
-                if hasattr(self, '_wallet_retry_count'):
-                    self._wallet_retry_count += 1
-                else:
-                    self._wallet_retry_count = 1
+    def _safe_rpc_call(self, rpc_func_or_method, params=None, timeout_override=None, max_retries=3):
+        """Make RPC call with aggressive timeout and retry handling for busy nodes."""
+        timeout = timeout_override or self.base_timeout
+        
+        for attempt in range(max_retries):
+            try:
+                # Increase timeout for each retry
+                current_timeout = timeout * (attempt + 1)
                 
-                if self._wallet_retry_count <= 1:  # Only retry once
-                    if self.ensure_wallet_loaded():
-                        print("🔄 Retrying RPC call after loading wallet...")
-                        return self._safe_rpc_call(rpc_func_or_method, params, timeout_override)
+                # Update connection timeout if needed
+                if hasattr(self.rpc_connection, '_timeout'):
+                    self.rpc_connection._timeout = current_timeout
                 
-                # Reset retry counter
-                self._wallet_retry_count = 0
-                return None
-            
-            # Just return None silently for common busy node errors
-            elif any(x in error_msg for x in ["Request-sent", "Work queue", "timeout", "busy"]):
-                return None
-            # Only log unexpected errors
-            print(f"RPC Error: {e.error.get('message', error_msg) if hasattr(e, 'error') else error_msg}")
-            return None
-        except Exception as e:
-            error_str = str(e)
-            # Silently handle common timeout/busy errors
-            if any(x in error_str.lower() for x in ["timeout", "connection", "request-sent"]):
-                return None
-            # Only log unexpected errors
-            print(f"RPC call failed: {error_str}")
-            return None
+                start_time = time.time()
+                
+                # Handle both callable functions and method names with parameters
+                if callable(rpc_func_or_method):
+                    result = rpc_func_or_method()
+                else:
+                    # Method name with parameters
+                    method = getattr(self.rpc_connection, rpc_func_or_method)
+                    if params:
+                        result = method(*params)
+                    else:
+                        result = method()
+                
+                call_time = time.time() - start_time
+                
+                # Track slow calls and adjust timeouts
+                if call_time > self.slow_call_threshold:
+                    self.base_timeout = min(120, self.base_timeout * 1.1)
+                    if attempt == 0:  # Only log on first attempt
+                        print(f"⚠️ Slow RPC call: {call_time:.1f}s (adjusting timeout to {self.base_timeout:.1f}s)")
+                
+                # Success - reset any failure counters
+                if hasattr(self, '_rpc_failure_count'):
+                    self._rpc_failure_count = 0
+                
+                return result
+                
+            except JSONRPCException as e:
+                error_msg = str(e)
+                
+                # Handle wallet loading
+                if "no wallet is loaded" in error_msg.lower():
+                    if attempt == 0:  # Only try once per call
+                        print("⚠️ RPC call failed: No wallet loaded")
+                        if self.ensure_wallet_loaded():
+                            print("🔄 Retrying RPC call after loading wallet...")
+                            continue
+                    return None
+                
+                # Handle busy node errors with retries
+                elif any(x in error_msg.lower() for x in ["request-sent", "work queue", "timeout", "busy", "loading block index"]):
+                    if attempt < max_retries - 1:
+                        wait_time = (attempt + 1) * 2  # Progressive backoff: 2s, 4s, 6s
+                        if attempt == 0:  # Only log on first busy error
+                            print(f"⏳ Node busy (attempt {attempt + 1}/{max_retries}), retrying in {wait_time}s...")
+                        time.sleep(wait_time)
+                        continue
+                    else:
+                        # All retries failed
+                        self.node_busy = True
+                        if not hasattr(self, '_rpc_failure_count'):
+                            self._rpc_failure_count = 0
+                        self._rpc_failure_count += 1
+                        
+                        # Only log every 5th failure to avoid spam
+                        if self._rpc_failure_count % 5 == 1:
+                            print(f"⚠️ Bitcoin node consistently busy - call failed after {max_retries} attempts")
+                        return None
+                
+                # Other errors
+                else:
+                    if attempt == 0:  # Only log unexpected errors once
+                        print(f"RPC Error: {e.error.get('message', error_msg) if hasattr(e, 'error') else error_msg}")
+                    return None
+                    
+            except Exception as e:
+                error_str = str(e).lower()
+                
+                # Handle connection/timeout errors with retries
+                if any(x in error_str for x in ["timeout", "connection", "request-sent", "socket", "network"]):
+                    if attempt < max_retries - 1:
+                        wait_time = (attempt + 1) * 3  # Longer wait for connection issues
+                        if attempt == 0:
+                            print(f"🔌 Connection issue (attempt {attempt + 1}/{max_retries}), retrying in {wait_time}s...")
+                        time.sleep(wait_time)
+                        continue
+                    else:
+                        # Connection completely failed
+                        if attempt == 0:
+                            print(f"❌ Connection failed after {max_retries} attempts: {error_str}")
+                        return None
+                else:
+                    # Unexpected error
+                    if attempt == 0:
+                        print(f"RPC call failed: {error_str}")
+                    return None
+        
+        return None
     
     def _handle_update_error(self, error):
         """Handle update errors with adaptive behavior."""
@@ -533,84 +595,50 @@ class BitcoinService(QObject):
             print(f"📍 Stopped monitoring address: {address}")
     
     def update_address_balance(self, address):
-        """Update balance for a specific address."""
+        """Update balance for a specific address with busy node handling."""
         if not self.is_connected or not self.rpc_connection:
             return
             
+        # Skip if node is extremely busy
+        if getattr(self, '_rpc_failure_count', 0) > 15:
+            print(f"⏳ Skipping balance update for {address[:8]}... - node too busy")
+            return
+            
         try:
-            # Try different methods depending on Bitcoin Core version and wallet type
             balance_btc = Decimal('0')
             utxo_count = 0
             
-            # Method 1: Try scantxoutset (works with any address, no import needed)
+            # For descriptor wallets and busy nodes, use scantxoutset with longer timeout
             try:
+                print(f"📊 Checking balance for {address[:8]}... (this may take a while on busy nodes)")
                 scan_result = self._safe_rpc_call(
-                    lambda: self.rpc_connection.scantxoutset("start", [f"addr({address})"])
+                    lambda: self.rpc_connection.scantxoutset("start", [f"addr({address})"]),
+                    timeout_override=90,  # Much longer timeout for scantxoutset
+                    max_retries=2
                 )
                 if scan_result:
                     balance_btc = Decimal(str(scan_result.get('total_amount', 0)))
                     utxo_count = len(scan_result.get('unspents', []))
-                    print(f"📊 scantxoutset result for {address}: {balance_btc:.8f} BTC ({utxo_count} UTXOs)")
+                    print(f"📊 Balance check complete: {balance_btc:.8f} BTC ({utxo_count} UTXOs)")
                 else:
-                    # This is normal - address might be new or node might be busy
-                    if not hasattr(self, f'_first_empty_check_{address}'):
-                        print(f"📍 Address {address[:8]}... has no UTXOs (new address or all funds spent)")
-                        setattr(self, f'_first_empty_check_{address}', True)
-                    # Don't spam the console with repeated empty checks
+                    print(f"⏳ Balance check timed out for {address[:8]}... - will retry later")
+                    # Don't emit signal if we couldn't get data
+                    return
                     
             except Exception as e:
-                # Check if it's a "node busy" or expected error
                 error_str = str(e).lower()
-                if any(phrase in error_str for phrase in ['busy', 'request-sent', 'loading block index', 'verifying']):
-                    print(f"⏳ Bitcoin node busy, retrying address {address[:8]}... later")
-                    self.node_busy = True
-                    # Return what we have so far (might be 0)
-                    balance_info = {
-                        'balance_btc': balance_btc,
-                        'balance_sat': int(balance_btc * 100_000_000),
-                        'utxo_count': 0,
-                        'status': 'node_busy'
-                    }
-                    if address in self.address_balances:
-                        self.address_balances[address] = balance_btc
-                    self.address_balance_updated.emit(address, balance_info)
+                if any(phrase in error_str for phrase in ['busy', 'request-sent', 'timeout', 'loading block index', 'verifying']):
+                    print(f"⏳ Balance check failed - node busy, will retry later for {address[:8]}...")
+                    # Don't treat this as an error, just wait for next cycle
                     return
                 else:
-                    print(f"⚠️ Address monitoring unavailable for {address[:8]}...: {e}")
-                
-                # Method 2: Try listunspent (requires imported address)
-                try:
-                    # First try to import the address (works with legacy wallets)
-                    try:
-                        self.rpc_connection.importaddress(address, "", False)
-                        print(f"✅ Imported address {address}")
-                    except JSONRPCException as import_error:
-                        if "already exists" in str(import_error).lower():
-                            print(f"📍 Address {address} already imported")
-                        elif "descriptor wallet" in str(import_error).lower():
-                            print(f"⚠️ Descriptor wallet detected - using alternative method")
-                            # For descriptor wallets, we'll use scantxoutset which we already tried
-                            balance_btc = Decimal('0')
-                        else:
-                            print(f"⚠️ Could not import address {address}: {import_error}")
-                    
-                    # Try listunspent for imported address
-                    if balance_btc == 0:  # Only if scantxoutset didn't work
-                        unspent = self._safe_rpc_call(lambda: self.rpc_connection.listunspent(0, 9999999, [address]))
-                        if unspent is not None:
-                            balance_btc = sum(Decimal(str(utxo['amount'])) for utxo in unspent)
-                            utxo_count = len(unspent)
-                            print(f"📊 listunspent result for {address}: {balance_btc:.8f} BTC ({utxo_count} UTXOs)")
-                        
-                except Exception as e2:
-                    print(f"⚠️ listunspent failed for {address}: {e2}")
+                    print(f"⚠️ Balance check error for {address[:8]}...: {e}")
+                    # Emit zero balance on real error
+                    balance_btc = Decimal('0')
             
             # Update stored balance
             old_balance = self.address_balances.get(address, Decimal('0'))
             self.address_balances[address] = balance_btc
-            
-            # If balance changed, force transaction update
-            balance_changed = old_balance != balance_btc
             
             # Get current Bitcoin price for USD conversion
             btc_price_usd = self.get_btc_price_estimate()
@@ -628,25 +656,22 @@ class BitcoinService(QObject):
             # Emit signal with balance update
             self.address_balance_updated.emit(address, balance_info)
             
-            # Only show detailed balance updates for non-zero balances or first time
-            if balance_btc > 0 or not hasattr(self, f'_first_update_{address}'):
-                print(f"💰 Balance updated for {address[:8]}...: {balance_btc:.8f} BTC (${balance_usd:.2f})")
-                setattr(self, f'_first_update_{address}', True)
-            
-            # If balance changed (especially increased), update transactions immediately
-            if balance_changed and balance_btc > old_balance:
-                print(f"📈 Balance increased for {address[:8]}... - forcing transaction update")
-                # Force immediate transaction update in background
-                import threading
-                tx_thread = threading.Thread(target=lambda: self.update_address_transactions(address), daemon=True)
-                tx_thread.start()
-            
-            # Update status message for UI
+            # Show balance updates
             if balance_btc > 0:
-                self.status_message.emit(f"✅ Address monitoring active - Balance: {balance_btc:.8f} BTC")
-            elif not hasattr(self, '_monitoring_status_shown'):
-                self.status_message.emit(f"📍 Monitoring address - No funds detected")
-                self._monitoring_status_shown = True
+                print(f"💰 Balance: {balance_btc:.8f} BTC (${balance_usd:.2f}) for {address[:8]}...")
+                self.status_message.emit(f"✅ Balance: {balance_btc:.8f} BTC")
+                
+                # If balance increased, schedule transaction update for later (don't do it immediately on busy nodes)
+                if balance_btc > old_balance:
+                    print(f"📈 Balance increased - will update transactions in next cycle")
+                    # Set a flag to update transactions in next cycle rather than immediately
+                    if not hasattr(self, '_pending_tx_updates'):
+                        self._pending_tx_updates = set()
+                    self._pending_tx_updates.add(address)
+            else:
+                if not hasattr(self, '_zero_balance_shown'):
+                    self.status_message.emit(f"📍 Monitoring address - No funds detected")
+                    self._zero_balance_shown = True
                 
         except Exception as e:
             print(f"❌ Error updating balance for {address}: {e}")
@@ -811,50 +836,90 @@ class BitcoinService(QObject):
             self.address_transactions_updated.emit(address, [])
     
     def update_all_monitored_addresses(self):
-        """Update all monitored addresses with intelligent throttling."""
+        """Update all monitored addresses with intelligent throttling for busy nodes."""
         if not self.monitored_addresses:
             return
             
-        # If node was busy, wait longer between updates
+        # For very busy nodes, reduce frequency dramatically
+        if getattr(self, '_rpc_failure_count', 0) > 10:
+            if not hasattr(self, '_busy_skip_counter'):
+                self._busy_skip_counter = 0
+            self._busy_skip_counter += 1
+            if self._busy_skip_counter < 10:  # Skip 9 out of 10 updates
+                print(f"⏳ Skipping address updates - node too busy ({self._busy_skip_counter}/10)")
+                return
+            self._busy_skip_counter = 0
+            print(f"🔄 Attempting address updates on very busy node...")
+            
+        # Regular busy node handling
         if self.node_busy:
             if not hasattr(self, '_skip_address_update_counter'):
                 self._skip_address_update_counter = 0
             self._skip_address_update_counter += 1
-            if self._skip_address_update_counter < 3:  # Skip 2 updates
-                print(f"⏳ Skipping address updates while node is busy ({self._skip_address_update_counter}/3)")
+            if self._skip_address_update_counter < 5:  # Skip more updates when busy
+                print(f"⏳ Skipping address updates while node is busy ({self._skip_address_update_counter}/5)")
                 return
             self._skip_address_update_counter = 0
             print(f"🔄 Retrying address updates after busy period")
             
-        # Reset node busy flag and try address updates
-        self.node_busy = False
-        for address in list(self.monitored_addresses):
-            self.update_address_balance(address)
-            # Update transactions periodically (every 3rd update to reduce load)
-            if not hasattr(self, '_tx_update_counter'):
-                self._tx_update_counter = 0
-            self._tx_update_counter += 1
-            if self._tx_update_counter % 3 == 0:  # Update transactions every 3rd cycle
-                self.update_address_transactions(address)
+        # Process only one address per cycle to reduce load
+        if not hasattr(self, '_address_update_rotation'):
+            self._address_update_rotation = 0
+        
+        address_list = list(self.monitored_addresses)
+        if address_list:
+            # Update only one address per cycle
+            current_address = address_list[self._address_update_rotation % len(address_list)]
+            self._address_update_rotation += 1
+            
+            print(f"📍 Updating address {self._address_update_rotation}/{len(address_list)}: {current_address[:8]}...")
+            self.update_address_balance(current_address)
+            
+            # Handle pending transaction updates (from balance changes)
+            if hasattr(self, '_pending_tx_updates') and self._pending_tx_updates:
+                if current_address in self._pending_tx_updates:
+                    print(f"📋 Processing pending transaction update for {current_address[:8]}...")
+                    self.update_address_transactions(current_address)
+                    self._pending_tx_updates.discard(current_address)
+            
+            # Only update transactions occasionally (every 5th cycle for this address)
+            elif self._address_update_rotation % (len(address_list) * 5) == 0:
+                print(f"📋 Periodic transaction update for {current_address[:8]}...")
+                self.update_address_transactions(current_address)
     
     def _adjust_update_frequency(self, success=True):
-        """Dynamically adjust update frequency based on node responsiveness."""
+        """Dynamically adjust update frequency based on node responsiveness with aggressive scaling for busy nodes."""
+        current_interval = self.update_timer.interval()
+        
         if success:
             # Gradually return to normal frequency if things are working well
-            if self.update_timer.interval() > self.update_interval:
-                new_interval = max(self.update_interval, self.update_timer.interval() - 2000)
+            if current_interval > self.update_interval:
+                # But be very conservative about speeding up
+                new_interval = max(self.update_interval, current_interval - 5000)  # Only reduce by 5s at a time
                 self.update_timer.setInterval(new_interval)
-                if new_interval != self.update_timer.interval():
-                    print(f"📈 Update frequency increased to {new_interval/1000}s")
+                if new_interval != current_interval:
+                    print(f"📈 Update frequency slightly increased to {new_interval/1000}s")
         else:
-            # Slow down updates when having issues
-            current_interval = self.update_timer.interval()
-            max_interval = 60000 if self.is_low_power_device else 30000  # 60s or 30s max
-            new_interval = min(max_interval, current_interval + 5000)
+            # Aggressively slow down updates when having issues
+            failure_count = getattr(self, '_rpc_failure_count', 0)
+            
+            if failure_count > 20:
+                # Extremely busy - 5 minute intervals
+                new_interval = 300000  # 5 minutes
+            elif failure_count > 10:
+                # Very busy - 2 minute intervals
+                new_interval = 120000  # 2 minutes
+            elif failure_count > 5:
+                # Busy - 1 minute intervals
+                new_interval = 60000   # 1 minute
+            else:
+                # Somewhat busy - progressive increase
+                max_interval = 120000 if self.is_low_power_device else 60000  # 2min or 1min max normally
+                new_interval = min(max_interval, current_interval + 10000)  # Increase by 10s
             
             if new_interval != current_interval:
                 self.update_timer.setInterval(new_interval)
-                print(f"📉 Update frequency reduced to {new_interval/1000}s due to node being busy")
+                print(f"📉 Update frequency reduced to {new_interval/1000}s due to node being busy (failures: {failure_count})")
     
     def _update_data_background(self):
         """Run update_data in background thread to prevent UI blocking."""
