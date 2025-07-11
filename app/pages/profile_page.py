@@ -39,6 +39,7 @@ class ProfilePage(QWidget):
         self.bitcoin_service = bitcoin_service
         self.descriptor_generator = None
         self.wallet_addresses = {}
+        self.wallet_loaded = False
 
         self.layout = QVBoxLayout()
         self.setLayout(self.layout)
@@ -49,14 +50,33 @@ class ProfilePage(QWidget):
         title.setStyleSheet("font-size: 18px; font-weight: bold;")
         self.layout.addWidget(title)
 
-        self.address_label = QLabel("Bitcoin Address: (loading from wallet...)")
+        # Bitcoin Core Connection Status (prominent display)
+        self.connection_status_label = QLabel("🔴 Bitcoin Core: Not Connected")
+        self.connection_status_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #d32f2f; padding: 10px; border: 2px solid #d32f2f; border-radius: 5px;")
+        self.layout.addWidget(self.connection_status_label)
+
+        # Connection instructions
+        self.connection_instructions = QLabel(
+            "⚠️ Bitcoin Core connection required to load wallet addresses.\n"
+            "Please ensure Bitcoin Core is running with RPC enabled."
+        )
+        self.connection_instructions.setStyleSheet("color: #ff9800; font-style: italic; padding: 5px;")
+        self.connection_instructions.setWordWrap(True)
+        self.layout.addWidget(self.connection_instructions)
+
+        # Wallet address section (initially hidden)
+        self.wallet_section = QWidget()
+        self.wallet_layout = QVBoxLayout()
+        self.wallet_section.setLayout(self.wallet_layout)
+        
+        self.address_label = QLabel("Bitcoin Address: (waiting for Bitcoin Core connection...)")
         self.address_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.layout.addWidget(self.address_label)
+        self.wallet_layout.addWidget(self.address_label)
 
         # Wallet status
-        self.wallet_status_label = QLabel("Wallet Status: Connecting...")
+        self.wallet_status_label = QLabel("Wallet Status: Waiting for Bitcoin Core...")
         self.wallet_status_label.setStyleSheet("color: #666; font-style: italic;")
-        self.layout.addWidget(self.wallet_status_label)
+        self.wallet_layout.addWidget(self.wallet_status_label)
 
         # Address type selector
         address_type_layout = QHBoxLayout()
@@ -64,17 +84,21 @@ class ProfilePage(QWidget):
         self.address_type_combo = QComboBox()
         self.address_type_combo.addItems(["Segwit (bech32)", "Legacy (P2PKH)", "P2SH-wrapped Segwit"])
         self.address_type_combo.currentTextChanged.connect(self.on_address_type_changed)
+        self.address_type_combo.setEnabled(False)  # Disabled until Bitcoin Core connects
         address_type_layout.addWidget(self.address_type_combo)
         address_type_layout.addStretch()
-        self.layout.addLayout(address_type_layout)
+        self.wallet_layout.addLayout(address_type_layout)
 
         # Bitcoin wallet widget for blockchain sync
         self.bitcoin_wallet = BitcoinWalletWidget()
-        self.layout.addWidget(self.bitcoin_wallet)
+        self.wallet_layout.addWidget(self.bitcoin_wallet)
         
-        # Initialize descriptor generator if bitcoin service is available
-        if self.bitcoin_service:
-            self.setup_descriptor_generator()
+        # Initially hide wallet section
+        self.wallet_section.hide()
+        self.layout.addWidget(self.wallet_section)
+        
+        # DO NOT initialize descriptor generator until Bitcoin Core connects
+        # This ensures only Bitcoin Core wallets can be loaded
 
         self.qr_label = QLabel()
         self.layout.addWidget(self.qr_label, alignment=Qt.AlignmentFlag.AlignHCenter)
@@ -148,7 +172,7 @@ class ProfilePage(QWidget):
             # Initialize with placeholder data - will be populated from wallet
             data = {
                 "wallet_based": True,  # Flag to indicate this uses wallet addresses
-                "address": None,  # Will be populated from wallet
+                "address": None,  # Will be populated from wallet after Bitcoin Core connects
                 "nickname": "AlphaNode",
                 "role": "Standard",
                 "devices": []
@@ -156,24 +180,76 @@ class ProfilePage(QWidget):
             with open(PROFILE_PATH, "w") as f:
                 json.dump(data, f, indent=4)
 
-        # Load profile data
+        # Load basic profile data (non-wallet related)
         self.nickname_input.setText(data.get("nickname", ""))
         self.role_select.setCurrentText(data.get("role", "Standard"))
         self.devices = data.get("devices", [])
-
-        # Load wallet addresses if descriptor generator is available
-        if self.descriptor_generator:
-            try:
-                self.load_wallet_addresses()
-            except Exception as e:
-                print(f"⚠️ Could not load wallet addresses: {e}")
-                self.wallet_status_label.setText("Wallet Status: ⚠️ Connection failed")
-                self.address_label.setText("Bitcoin Address: (wallet connection failed)")
-        else:
-            # Fallback to legacy behavior if no Bitcoin service
-            self.load_legacy_profile(data)
-            
         self.refresh_device_list()
+
+    def on_bitcoin_core_connected(self):
+        """Called when Bitcoin Core connection is established."""
+        try:
+            print("🟢 Bitcoin Core connected - initializing wallet integration")
+            
+            # Update connection status
+            self.connection_status_label.setText("🟢 Bitcoin Core: Connected")
+            self.connection_status_label.setStyleSheet(
+                "font-size: 16px; font-weight: bold; color: #2e7d32; padding: 10px; "
+                "border: 2px solid #2e7d32; border-radius: 5px;"
+            )
+            
+            # Hide connection instructions
+            self.connection_instructions.hide()
+            
+            # Show wallet section
+            self.wallet_section.show()
+            
+            # Enable address type selector
+            self.address_type_combo.setEnabled(True)
+            
+            # Now setup descriptor generator and load wallet addresses
+            self.setup_descriptor_generator()
+            if self.descriptor_generator:
+                self.load_wallet_addresses()
+                self.wallet_loaded = True
+            else:
+                raise Exception("Failed to initialize descriptor generator")
+                
+        except Exception as e:
+            print(f"❌ Error setting up wallet after Bitcoin Core connection: {e}")
+            self.wallet_status_label.setText(f"Wallet Status: ❌ Error: {str(e)}")
+            self.address_label.setText("Bitcoin Address: (wallet setup failed)")
+
+    def on_bitcoin_core_disconnected(self):
+        """Called when Bitcoin Core connection is lost."""
+        print("🔴 Bitcoin Core disconnected - disabling wallet functionality")
+        
+        # Update connection status
+        self.connection_status_label.setText("🔴 Bitcoin Core: Not Connected")
+        self.connection_status_label.setStyleSheet(
+            "font-size: 16px; font-weight: bold; color: #d32f2f; padding: 10px; "
+            "border: 2px solid #d32f2f; border-radius: 5px;"
+        )
+        
+        # Show connection instructions
+        self.connection_instructions.show()
+        
+        # Hide wallet section
+        self.wallet_section.hide()
+        
+        # Disable address type selector
+        self.address_type_combo.setEnabled(False)
+        
+        # Clear wallet data
+        self.descriptor_generator = None
+        self.wallet_addresses = {}
+        self.wallet_loaded = False
+        
+        # Reset status
+        self.wallet_status_label.setText("Wallet Status: ⏳ Waiting for Bitcoin Core connection...")
+        self.address_label.setText("Bitcoin Address: (Bitcoin Core connection required)")
+        
+        print("📋 Profile loaded - waiting for Bitcoin Core connection to load wallet addresses")
 
     def load_wallet_addresses(self):
         """Load addresses from Bitcoin Core wallet."""
@@ -243,51 +319,10 @@ class ProfilePage(QWidget):
         except Exception as e:
             print(f"⚠️ Could not save wallet address to profile: {e}")
 
-    def load_legacy_profile(self, data):
-        """Load legacy profile with standalone key generation."""
-        try:
-            # Import the old generator for backward compatibility
-            from app.utils.bitcoin_address_generator import BitcoinAddressGenerator
-            
-            if "private_key" in data:
-                # Existing legacy profile
-                self.private_key = data["private_key"]
-                self.address = data["address"]
-            else:
-                # Generate new legacy profile
-                generator = BitcoinAddressGenerator()
-                self.private_key = generator.private_key_wif
-                self.address = generator.get_native_segwit_address()
-                
-                # Save new data
-                data.update({
-                    "private_key": self.private_key,
-                    "address": self.address,
-                    "legacy_address": generator.get_legacy_address(),
-                    "p2sh_segwit_address": generator.get_p2sh_segwit_address()
-                })
-                
-                with open(PROFILE_PATH, "w") as f:
-                    json.dump(data, f, indent=4)
-
-            self.address_label.setText(f"Bitcoin Address:\n{self.address}")
-            self.bitcoin_wallet.set_address(self.address)
-            self.generate_qr_code(self.address)
-            self.wallet_status_label.setText("Wallet Status: 📍 Using standalone address (no Bitcoin Core)")
-            
-            # Set address type combo
-            if self.address.startswith('bc1') or self.address.startswith('tb1'):
-                self.address_type_combo.setCurrentText("Segwit (bech32)")
-            elif self.address.startswith('3') or self.address.startswith('2'):
-                self.address_type_combo.setCurrentText("P2SH-wrapped Segwit")
-            else:
-                self.address_type_combo.setCurrentText("Legacy (P2PKH)")
-                
-        except Exception as e:
-            print(f"❌ Error loading legacy profile: {e}")
-            self.wallet_status_label.setText("Wallet Status: ❌ Error loading profile")
+    # Legacy profile loader removed - Bitcoin Core wallet required
 
     def save_profile(self):
+        """Save profile - Bitcoin Core wallet addresses only."""
         nickname = self.nickname_input.text().strip()
         role = self.role_select.currentText()
 
@@ -295,16 +330,21 @@ class ProfilePage(QWidget):
             self.show_message("Error", "Nickname cannot be empty.")
             return
 
-        data = {
-            "private_key": self.private_key,
-            "address": self.address,
-            "nickname": nickname,
-            "role": role,
-            "devices": self.devices
-        }
+        # Use wallet-based profile saving if wallet is loaded
+        if self.wallet_loaded and hasattr(self, 'address'):
+            self.save_wallet_address_to_profile()
+        else:
+            # Save basic profile data only
+            data = {
+                "wallet_based": True,
+                "address": None,  # Will be populated when Bitcoin Core connects
+                "nickname": nickname,
+                "role": role,
+                "devices": self.devices
+            }
 
-        with open(PROFILE_PATH, "w") as f:
-            json.dump(data, f, indent=4)
+            with open(PROFILE_PATH, "w") as f:
+                json.dump(data, f, indent=4)
 
         self.show_message("Profile Saved", "Your profile has been updated successfully!")
 
@@ -440,30 +480,12 @@ class ProfilePage(QWidget):
                     # Save the updated profile
                     self.save_wallet_address_to_profile()
                     
-            elif hasattr(self, 'private_key') and self.private_key:
-                # Fallback to legacy generator
-                from app.utils.bitcoin_address_generator import BitcoinAddressGenerator
-                generator = BitcoinAddressGenerator(self.private_key)
-                
-                if address_type.startswith("Segwit"):
-                    new_address = generator.get_native_segwit_address()
-                elif address_type.startswith("P2SH"):
-                    new_address = generator.get_p2sh_segwit_address()
-                else:  # Legacy
-                    new_address = generator.get_legacy_address()
-                
-                if new_address != self.address:
-                    self.address = new_address
-                    self.address_label.setText(f"Bitcoin Address:\n{self.address}")
-                    self.bitcoin_wallet.set_address(self.address)
-                    self.generate_qr_code(self.address)
-                    
-                    print(f"🔄 Legacy address type changed to {address_type}: {self.address}")
-                    
-                    # Save the updated profile
-                    self.save_profile()
             else:
-                QMessageBox.warning(self, "Error", "No wallet connection or private key available")
+                QMessageBox.warning(
+                    self, "Bitcoin Core Required",
+                    "Address type changes require a Bitcoin Core wallet connection.\n"
+                    "Please ensure Bitcoin Core is running and connected."
+                )
                 
         except Exception as e:
             print(f"❌ Error changing address type: {e}")
