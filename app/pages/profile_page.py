@@ -64,6 +64,19 @@ class ProfilePage(QWidget):
         self.connection_instructions.setWordWrap(True)
         self.layout.addWidget(self.connection_instructions)
 
+        # Refresh wallet state button
+        self.refresh_wallet_button = QPushButton("🔄 Check Bitcoin Core Connection")
+        self.refresh_wallet_button.setStyleSheet(
+            "QPushButton { "
+            "background-color: #2196F3; color: white; font-weight: bold; "
+            "padding: 8px 16px; border: none; border-radius: 4px; "
+            "} "
+            "QPushButton:hover { background-color: #1976D2; } "
+            "QPushButton:pressed { background-color: #0D47A1; }"
+        )
+        self.refresh_wallet_button.clicked.connect(self.refresh_wallet_state)
+        self.layout.addWidget(self.refresh_wallet_button)
+
         # Wallet address section (initially hidden)
         self.wallet_section = QWidget()
         self.wallet_layout = QVBoxLayout()
@@ -198,8 +211,9 @@ class ProfilePage(QWidget):
                 "border: 2px solid #2e7d32; border-radius: 5px;"
             )
             
-            # Hide connection instructions
+            # Hide connection instructions and refresh button
             self.connection_instructions.hide()
+            self.refresh_wallet_button.hide()
             
             # Show wallet section
             self.wallet_section.show()
@@ -231,8 +245,9 @@ class ProfilePage(QWidget):
             "border: 2px solid #d32f2f; border-radius: 5px;"
         )
         
-        # Show connection instructions
+        # Show connection instructions and refresh button
         self.connection_instructions.show()
+        self.refresh_wallet_button.show()
         
         # Hide wallet section
         self.wallet_section.hide()
@@ -251,6 +266,67 @@ class ProfilePage(QWidget):
         
         print("📋 Profile loaded - waiting for Bitcoin Core connection to load wallet addresses")
 
+    def refresh_wallet_state(self):
+        """Refresh wallet state - check for Bitcoin Core connection and reload wallet."""
+        try:
+            print("🔄 Refreshing wallet state...")
+            
+            # Update button state
+            self.refresh_wallet_button.setText("🔄 Checking...")
+            self.refresh_wallet_button.setEnabled(False)
+            
+            # Check if we have a bitcoin service
+            if not self.bitcoin_service:
+                print("⚠️ No Bitcoin service available")
+                self.show_refresh_error("No Bitcoin service configured. Please restart the application.")
+                return
+            
+            # Try to connect/reconnect to Bitcoin Core
+            try:
+                connection_success = self.bitcoin_service.connect_to_node()
+                if connection_success:
+                    print("✅ Bitcoin Core connection successful")
+                    # Trigger wallet initialization
+                    self.on_bitcoin_core_connected()
+                    self.show_refresh_success("Successfully connected to Bitcoin Core and loaded wallet!")
+                else:
+                    print("❌ Bitcoin Core connection failed")
+                    self.on_bitcoin_core_disconnected()
+                    self.show_refresh_error(
+                        "Could not connect to Bitcoin Core.\n"
+                        "Please ensure:\n"
+                        "• Bitcoin Core is running\n"
+                        "• RPC is enabled\n"
+                        "• Correct RPC credentials in config"
+                    )
+            except Exception as e:
+                print(f"❌ Connection error: {e}")
+                self.on_bitcoin_core_disconnected()
+                self.show_refresh_error(f"Connection error: {str(e)}")
+                
+        except Exception as e:
+            print(f"❌ Refresh wallet state error: {e}")
+            self.show_refresh_error(f"Refresh failed: {str(e)}")
+        finally:
+            # Reset button state
+            self.refresh_wallet_button.setText("🔄 Check Bitcoin Core Connection")
+            self.refresh_wallet_button.setEnabled(True)
+
+    def show_refresh_success(self, message):
+        """Show success message for wallet refresh."""
+        QMessageBox.information(
+            self, 
+            "Wallet Refresh Successful", 
+            message
+        )
+
+    def show_refresh_error(self, message):
+        """Show error message for wallet refresh."""
+        QMessageBox.warning(
+            self, 
+            "Wallet Refresh Failed", 
+            message
+        )
     def load_wallet_addresses(self):
         """Load addresses from Bitcoin Core wallet."""
         try:
