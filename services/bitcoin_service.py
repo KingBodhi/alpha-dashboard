@@ -1388,3 +1388,219 @@ class BitcoinService(QObject):
                 print(f"❌ Wallet check failed: {e}")
         
         return False
+    
+    # =====================================================================
+    # DESCRIPTOR WALLET FUNCTIONALITY
+    # =====================================================================
+    
+    def get_wallet_descriptors(self):
+        """Get all descriptors from the loaded wallet."""
+        if not self.is_connected or not self.rpc_connection:
+            return None
+            
+        try:
+            # Get descriptors (only works for descriptor wallets)
+            descriptors = self._safe_rpc_call(
+                lambda: self.rpc_connection.listdescriptors()
+            )
+            
+            if descriptors:
+                logger.info(f"Retrieved {len(descriptors.get('descriptors', []))} wallet descriptors")
+                return descriptors
+            else:
+                logger.warning("Could not retrieve wallet descriptors - may not be a descriptor wallet")
+                return None
+                
+        except Exception as e:
+            logger.warning(f"Error getting descriptors (wallet may not support them): {e}")
+            return None
+    
+    def generate_wallet_address(self, address_type='bech32', label=None):
+        """
+        Generate a new address from the wallet.
+        
+        Args:
+            address_type: 'legacy', 'p2sh-segwit', or 'bech32'
+            label: Optional label for the address
+            
+        Returns:
+            New address string
+        """
+        if not self.is_connected or not self.rpc_connection:
+            return None
+            
+        try:
+            # Map address types to Bitcoin Core parameters
+            address_type_map = {
+                'legacy': 'legacy',
+                'p2sh-segwit': 'p2sh-segwit',
+                'bech32': 'bech32',
+                'native-segwit': 'bech32'
+            }
+            
+            core_type = address_type_map.get(address_type, 'bech32')
+            
+            # Generate new address
+            if label:
+                address = self._safe_rpc_call(
+                    lambda: self.rpc_connection.getnewaddress(label, core_type)
+                )
+            else:
+                address = self._safe_rpc_call(
+                    lambda: self.rpc_connection.getnewaddress("", core_type)
+                )
+            
+            if address:
+                logger.info(f"Generated new {address_type} address: {address[:16]}...")
+                return address
+            else:
+                logger.error(f"Failed to generate {address_type} address")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error generating new address: {e}")
+            return None
+    
+    def get_wallet_addresses(self, include_change=False):
+        """
+        Get all addresses from the wallet.
+        
+        Args:
+            include_change: Whether to include change addresses
+            
+        Returns:
+            List of addresses with their information
+        """
+        if not self.is_connected or not self.rpc_connection:
+            return []
+            
+        try:
+            addresses = []
+            
+            # Get receiving addresses
+            receiving_addresses = self._safe_rpc_call(
+                lambda: self.rpc_connection.getaddressesbylabel("")
+            )
+            
+            if receiving_addresses:
+                for addr, info in receiving_addresses.items():
+                    addr_info = self.get_address_info(addr)
+                    addresses.append({
+                        'address': addr,
+                        'type': self._detect_address_type(addr),
+                        'purpose': 'receive',
+                        'info': addr_info
+                    })
+            
+            # Get change addresses if requested
+            if include_change:
+                try:
+                    change_address = self._safe_rpc_call(
+                        lambda: self.rpc_connection.getrawchangeaddress()
+                    )
+                    if change_address:
+                        addr_info = self.get_address_info(change_address)
+                        addresses.append({
+                            'address': change_address,
+                            'type': self._detect_address_type(change_address),
+                            'purpose': 'change',
+                            'info': addr_info
+                        })
+                except Exception:
+                    pass  # Change addresses might not be available
+            
+            return addresses
+            
+        except Exception as e:
+            logger.error(f"Error getting wallet addresses: {e}")
+            return []
+    
+    def get_address_info(self, address):
+        """Get detailed information about an address."""
+        if not self.is_connected or not self.rpc_connection:
+            return None
+            
+        try:
+            # Get address info from Bitcoin Core
+            addr_info = self._safe_rpc_call(
+                lambda: self.rpc_connection.getaddressinfo(address)
+            )
+            
+            return addr_info
+            
+        except Exception as e:
+            logger.warning(f"Could not get info for address {address[:16]}...: {e}")
+            return None
+    
+    def _detect_address_type(self, address):
+        """Detect the type of address based on its format."""
+        if address.startswith('bc1') or address.startswith('tb1'):
+            return 'bech32'
+        elif address.startswith('3') or address.startswith('2'):
+            return 'p2sh-segwit'
+        elif address.startswith('1'):
+            return 'legacy'
+        else:
+            return 'unknown'
+    
+    def get_all_wallet_address_types(self):
+        """
+        Get addresses of all types from the wallet, generating if needed.
+        
+        Returns:
+            Dictionary with all address types available in the wallet
+        """
+        try:
+            addresses = {
+                'bech32': None,
+                'p2sh_segwit': None,
+                'legacy': None
+            }
+            
+            # Get existing addresses
+            wallet_addresses = self.get_wallet_addresses()
+            
+            # Fill in existing addresses by type
+            for addr_data in wallet_addresses:
+                addr_type = addr_data['type']
+                if addr_type == 'bech32' and not addresses['bech32']:
+                    addresses['bech32'] = addr_data['address']
+                elif addr_type == 'p2sh-segwit' and not addresses['p2sh_segwit']:
+                    addresses['p2sh_segwit'] = addr_data['address']
+                elif addr_type == 'legacy' and not addresses['legacy']:
+                    addresses['legacy'] = addr_data['address']
+            
+            # Generate missing address types
+            if not addresses['bech32']:
+                addresses['bech32'] = self.generate_wallet_address('bech32', 'Dashboard Native SegWit')
+            if not addresses['p2sh_segwit']:
+                addresses['p2sh_segwit'] = self.generate_wallet_address('p2sh-segwit', 'Dashboard P2SH SegWit')
+            if not addresses['legacy']:
+                addresses['legacy'] = self.generate_wallet_address('legacy', 'Dashboard Legacy')
+            
+            return addresses
+            
+        except Exception as e:
+            logger.error(f"Error getting all address types: {e}")
+            return {}
+    
+    def validate_address_ownership(self, address):
+        """
+        Validate that an address belongs to the loaded wallet.
+        
+        Args:
+            address: Address to validate
+            
+        Returns:
+            True if address belongs to wallet, False otherwise
+        """
+        try:
+            addr_info = self.get_address_info(address)
+            if addr_info:
+                return addr_info.get('ismine', False)
+            
+            return False
+            
+        except Exception as e:
+            logger.warning(f"Error validating address ownership: {e}")
+            return False

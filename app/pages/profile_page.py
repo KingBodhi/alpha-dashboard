@@ -3,9 +3,9 @@ import json
 from pathlib import Path
 from app.pages import globals
 from app.widgets.bitcoin_wallet_widget import BitcoinWalletWidget
-from app.utils.bitcoin_address_generator import BitcoinAddressGenerator
+from app.utils.bitcoin_wallet_descriptor_generator import BitcoinWalletDescriptorGenerator
 # ====================================================
-# Bitcoin address generation utility handles all crypto
+# Bitcoin Core descriptor-based address generation
 # ====================================================
 
 from PyQt6.QtWidgets import (
@@ -32,10 +32,13 @@ class ProfilePage(QWidget):
         else:
             QMessageBox.warning(self, "Not Ready", "APN URL is not yet available.")
 
-    def __init__(self):
+    def __init__(self, bitcoin_service=None):
         super().__init__()
 
         self.devices = []
+        self.bitcoin_service = bitcoin_service
+        self.descriptor_generator = None
+        self.wallet_addresses = {}
 
         self.layout = QVBoxLayout()
         self.setLayout(self.layout)
@@ -46,9 +49,14 @@ class ProfilePage(QWidget):
         title.setStyleSheet("font-size: 18px; font-weight: bold;")
         self.layout.addWidget(title)
 
-        self.address_label = QLabel("Bitcoin Address: (loading...)")
+        self.address_label = QLabel("Bitcoin Address: (loading from wallet...)")
         self.address_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.layout.addWidget(self.address_label)
+
+        # Wallet status
+        self.wallet_status_label = QLabel("Wallet Status: Connecting...")
+        self.wallet_status_label.setStyleSheet("color: #666; font-style: italic;")
+        self.layout.addWidget(self.wallet_status_label)
 
         # Address type selector
         address_type_layout = QHBoxLayout()
@@ -63,6 +71,10 @@ class ProfilePage(QWidget):
         # Bitcoin wallet widget for blockchain sync
         self.bitcoin_wallet = BitcoinWalletWidget()
         self.layout.addWidget(self.bitcoin_wallet)
+        
+        # Initialize descriptor generator if bitcoin service is available
+        if self.bitcoin_service:
+            self.setup_descriptor_generator()
 
         self.qr_label = QLabel()
         self.layout.addWidget(self.qr_label, alignment=Qt.AlignmentFlag.AlignHCenter)
@@ -116,6 +128,15 @@ class ProfilePage(QWidget):
     def show_message(self, title, message):
         QMessageBox.information(self, title, message)
 
+    def setup_descriptor_generator(self):
+        """Setup the descriptor generator with Bitcoin service."""
+        try:
+            self.descriptor_generator = BitcoinWalletDescriptorGenerator(self.bitcoin_service)
+            print("✅ Descriptor generator initialized")
+        except Exception as e:
+            print(f"⚠️ Could not initialize descriptor generator: {e}")
+            self.descriptor_generator = None
+
     def load_or_create_profile(self):
         if not PROFILE_DIR.exists():
             PROFILE_DIR.mkdir(parents=True)
@@ -124,14 +145,10 @@ class ProfilePage(QWidget):
             with open(PROFILE_PATH, "r") as f:
                 data = json.load(f)
         else:
-            # Generate new key with native segwit as default
-            generator = BitcoinAddressGenerator()
-            
+            # Initialize with placeholder data - will be populated from wallet
             data = {
-                "private_key": generator.private_key_wif,
-                "address": generator.get_native_segwit_address(),  # Use native segwit as primary
-                "legacy_address": generator.get_legacy_address(),  # Keep legacy for compatibility
-                "p2sh_segwit_address": generator.get_p2sh_segwit_address(),  # Keep P2SH for compatibility
+                "wallet_based": True,  # Flag to indicate this uses wallet addresses
+                "address": None,  # Will be populated from wallet
                 "nickname": "AlphaNode",
                 "role": "Standard",
                 "devices": []
@@ -139,48 +156,136 @@ class ProfilePage(QWidget):
             with open(PROFILE_PATH, "w") as f:
                 json.dump(data, f, indent=4)
 
-        self.private_key = data["private_key"]
-        self.address = data["address"]
-        
-        # Migration: If old profile doesn't have native segwit, generate it
-        if not self.address.startswith('bc1') and not self.address.startswith('tb1'):
-            print(f"🔄 Migrating profile from address {self.address} to native segwit")
-            try:
-                generator = BitcoinAddressGenerator(self.private_key)
-                native_segwit_address = generator.get_native_segwit_address()
-                
-                # Update the data with native segwit address
-                data["address"] = native_segwit_address
-                data["legacy_address"] = generator.get_legacy_address()
-                data["p2sh_segwit_address"] = generator.get_p2sh_segwit_address()
-                
-                # Save the updated profile
-                with open(PROFILE_PATH, "w") as f:
-                    json.dump(data, f, indent=4)
-                
-                self.address = native_segwit_address
-                print(f"✅ Profile migrated to native segwit address: {native_segwit_address}")
-                
-            except Exception as e:
-                print(f"⚠️ Could not migrate to native segwit address: {e}")
-        
+        # Load profile data
         self.nickname_input.setText(data.get("nickname", ""))
         self.role_select.setCurrentText(data.get("role", "Standard"))
         self.devices = data.get("devices", [])
 
-        self.address_label.setText(f"Bitcoin Address:\n{self.address}")
-        self.bitcoin_wallet.set_address(self.address)
-        
-        # Set the address type combo based on current address
-        if self.address.startswith('bc1') or self.address.startswith('tb1'):
-            self.address_type_combo.setCurrentText("Segwit (bech32)")
-        elif self.address.startswith('3') or self.address.startswith('2'):
-            self.address_type_combo.setCurrentText("P2SH-wrapped Segwit")
+        # Load wallet addresses if descriptor generator is available
+        if self.descriptor_generator:
+            try:
+                self.load_wallet_addresses()
+            except Exception as e:
+                print(f"⚠️ Could not load wallet addresses: {e}")
+                self.wallet_status_label.setText("Wallet Status: ⚠️ Connection failed")
+                self.address_label.setText("Bitcoin Address: (wallet connection failed)")
         else:
-            self.address_type_combo.setCurrentText("Legacy (P2PKH)")
-        
-        self.generate_qr_code(self.address)
+            # Fallback to legacy behavior if no Bitcoin service
+            self.load_legacy_profile(data)
+            
         self.refresh_device_list()
+
+    def load_wallet_addresses(self):
+        """Load addresses from Bitcoin Core wallet."""
+        try:
+            self.wallet_status_label.setText("Wallet Status: 🔄 Loading addresses...")
+            
+            # Get all address types from wallet
+            self.wallet_addresses = self.descriptor_generator.get_all_address_types()
+            
+            # Set primary address (prefer bech32)
+            self.address = self.wallet_addresses.get('bech32')
+            if not self.address:
+                self.address = self.wallet_addresses.get('p2sh_segwit')
+            if not self.address:
+                self.address = self.wallet_addresses.get('legacy')
+                
+            if self.address:
+                self.address_label.setText(f"Bitcoin Address:\n{self.address}")
+                self.bitcoin_wallet.set_address(self.address)
+                
+                # Set address type combo
+                addr_type = self.descriptor_generator._detect_address_type(self.address)
+                if addr_type == 'bech32':
+                    self.address_type_combo.setCurrentText("Segwit (bech32)")
+                elif addr_type == 'p2sh-segwit':
+                    self.address_type_combo.setCurrentText("P2SH-wrapped Segwit")
+                else:
+                    self.address_type_combo.setCurrentText("Legacy (P2PKH)")
+                
+                self.generate_qr_code(self.address)
+                self.wallet_status_label.setText("Wallet Status: ✅ Connected to Bitcoin Core wallet")
+                
+                print(f"✅ Loaded wallet address: {self.address}")
+                
+                # Save the wallet address to profile
+                self.save_wallet_address_to_profile()
+                
+            else:
+                raise Exception("No addresses available in wallet")
+                
+        except Exception as e:
+            print(f"❌ Error loading wallet addresses: {e}")
+            self.wallet_status_label.setText(f"Wallet Status: ❌ Error: {str(e)}")
+            self.address_label.setText("Bitcoin Address: (error loading from wallet)")
+
+    def save_wallet_address_to_profile(self):
+        """Save current wallet address to profile."""
+        try:
+            if PROFILE_PATH.exists():
+                with open(PROFILE_PATH, "r") as f:
+                    data = json.load(f)
+            else:
+                data = {}
+                
+            data.update({
+                "wallet_based": True,
+                "address": self.address,
+                "wallet_addresses": self.wallet_addresses,
+                "nickname": self.nickname_input.text(),
+                "role": self.role_select.currentText(),
+                "devices": self.devices
+            })
+            
+            with open(PROFILE_PATH, "w") as f:
+                json.dump(data, f, indent=4)
+                
+        except Exception as e:
+            print(f"⚠️ Could not save wallet address to profile: {e}")
+
+    def load_legacy_profile(self, data):
+        """Load legacy profile with standalone key generation."""
+        try:
+            # Import the old generator for backward compatibility
+            from app.utils.bitcoin_address_generator import BitcoinAddressGenerator
+            
+            if "private_key" in data:
+                # Existing legacy profile
+                self.private_key = data["private_key"]
+                self.address = data["address"]
+            else:
+                # Generate new legacy profile
+                generator = BitcoinAddressGenerator()
+                self.private_key = generator.private_key_wif
+                self.address = generator.get_native_segwit_address()
+                
+                # Save new data
+                data.update({
+                    "private_key": self.private_key,
+                    "address": self.address,
+                    "legacy_address": generator.get_legacy_address(),
+                    "p2sh_segwit_address": generator.get_p2sh_segwit_address()
+                })
+                
+                with open(PROFILE_PATH, "w") as f:
+                    json.dump(data, f, indent=4)
+
+            self.address_label.setText(f"Bitcoin Address:\n{self.address}")
+            self.bitcoin_wallet.set_address(self.address)
+            self.generate_qr_code(self.address)
+            self.wallet_status_label.setText("Wallet Status: 📍 Using standalone address (no Bitcoin Core)")
+            
+            # Set address type combo
+            if self.address.startswith('bc1') or self.address.startswith('tb1'):
+                self.address_type_combo.setCurrentText("Segwit (bech32)")
+            elif self.address.startswith('3') or self.address.startswith('2'):
+                self.address_type_combo.setCurrentText("P2SH-wrapped Segwit")
+            else:
+                self.address_type_combo.setCurrentText("Legacy (P2PKH)")
+                
+        except Exception as e:
+            print(f"❌ Error loading legacy profile: {e}")
+            self.wallet_status_label.setText("Wallet Status: ❌ Error loading profile")
 
     def save_profile(self):
         nickname = self.nickname_input.text().strip()
@@ -314,30 +419,64 @@ class ProfilePage(QWidget):
 
     def on_address_type_changed(self, address_type):
         """Handle address type change."""
-        if not hasattr(self, 'private_key') or not self.private_key:
-            return
-            
         try:
-            generator = BitcoinAddressGenerator(self.private_key)
-            
-            if address_type.startswith("Segwit"):
-                new_address = generator.get_native_segwit_address()
-            elif address_type.startswith("P2SH"):
-                new_address = generator.get_p2sh_segwit_address()
-            else:  # Legacy
-                new_address = generator.get_legacy_address()
-            
-            if new_address != self.address:
-                self.address = new_address
-                self.address_label.setText(f"Bitcoin Address:\n{self.address}")
-                self.bitcoin_wallet.set_address(self.address)
-                self.generate_qr_code(self.address)
+            if self.descriptor_generator and self.wallet_addresses:
+                # Use wallet-based addresses
+                if address_type.startswith("Segwit"):
+                    new_address = self.wallet_addresses.get('bech32')
+                elif address_type.startswith("P2SH"):
+                    new_address = self.wallet_addresses.get('p2sh_segwit')
+                else:  # Legacy
+                    new_address = self.wallet_addresses.get('legacy')
                 
-                print(f"🔄 Address type changed to {address_type}: {self.address}")
+                if new_address and new_address != self.address:
+                    self.address = new_address
+                    self.address_label.setText(f"Bitcoin Address:\n{self.address}")
+                    self.bitcoin_wallet.set_address(self.address)
+                    self.generate_qr_code(self.address)
+                    
+                    print(f"🔄 Wallet address type changed to {address_type}: {self.address}")
+                    
+                    # Save the updated profile
+                    self.save_wallet_address_to_profile()
+                    
+            elif hasattr(self, 'private_key') and self.private_key:
+                # Fallback to legacy generator
+                from app.utils.bitcoin_address_generator import BitcoinAddressGenerator
+                generator = BitcoinAddressGenerator(self.private_key)
                 
-                # Save the updated profile
-                self.save_profile()
+                if address_type.startswith("Segwit"):
+                    new_address = generator.get_native_segwit_address()
+                elif address_type.startswith("P2SH"):
+                    new_address = generator.get_p2sh_segwit_address()
+                else:  # Legacy
+                    new_address = generator.get_legacy_address()
+                
+                if new_address != self.address:
+                    self.address = new_address
+                    self.address_label.setText(f"Bitcoin Address:\n{self.address}")
+                    self.bitcoin_wallet.set_address(self.address)
+                    self.generate_qr_code(self.address)
+                    
+                    print(f"🔄 Legacy address type changed to {address_type}: {self.address}")
+                    
+                    # Save the updated profile
+                    self.save_profile()
+            else:
+                QMessageBox.warning(self, "Error", "No wallet connection or private key available")
                 
         except Exception as e:
             print(f"❌ Error changing address type: {e}")
             QMessageBox.warning(self, "Error", f"Could not change address type: {e}")
+
+    def set_bitcoin_service(self, bitcoin_service):
+        """Set the Bitcoin service after initialization."""
+        self.bitcoin_service = bitcoin_service
+        self.setup_descriptor_generator()
+        
+        # Reload profile with wallet integration if connected
+        if bitcoin_service and bitcoin_service.is_connected:
+            try:
+                self.load_wallet_addresses()
+            except Exception as e:
+                print(f"⚠️ Could not load wallet addresses after setting service: {e}")
