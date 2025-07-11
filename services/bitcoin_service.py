@@ -471,8 +471,15 @@ class BitcoinService(QObject):
                 elif any(x in error_msg.lower() for x in ["request-sent", "work queue", "timeout", "busy", "loading block index"]):
                     if attempt < max_retries - 1:
                         wait_time = (attempt + 1) * 2  # Progressive backoff: 2s, 4s, 6s
-                        if attempt == 0:  # Only log on first busy error
+                        # Only log the first busy error per RPC call to reduce noise
+                        if attempt == 0 and not hasattr(self, '_last_busy_error_time'):
                             print(f"⏳ Node busy (attempt {attempt + 1}/{max_retries}), retrying in {wait_time}s...")
+                            self._last_busy_error_time = time.time()
+                        elif attempt == 0 and hasattr(self, '_last_busy_error_time'):
+                            # Only print if it's been more than 60 seconds since last busy error message
+                            if time.time() - self._last_busy_error_time > 60:
+                                print(f"⏳ Node busy (attempt {attempt + 1}/{max_retries}), retrying in {wait_time}s...")
+                                self._last_busy_error_time = time.time()
                         time.sleep(wait_time)
                         continue
                     else:
@@ -482,9 +489,9 @@ class BitcoinService(QObject):
                             self._rpc_failure_count = 0
                         self._rpc_failure_count += 1
                         
-                        # Only log every 5th failure to avoid spam
-                        if self._rpc_failure_count % 5 == 1:
-                            print(f"⚠️ Bitcoin node consistently busy - call failed after {max_retries} attempts")
+                        # Only log every 10th failure to avoid spam (increased from 5)
+                        if self._rpc_failure_count % 10 == 1:
+                            print(f"⚠️ Bitcoin node consistently busy - call failed after {max_retries} attempts (failure count: {self._rpc_failure_count})")
                         return None
                 
                 # Other errors
@@ -495,18 +502,17 @@ class BitcoinService(QObject):
                     
             except Exception as e:
                 error_str = str(e).lower()
-                print(error_str)
                 # Handle connection/timeout errors with retries
                 if any(x in error_str for x in ["timeout", "connection", "request-sent", "socket", "network"]):
                     if attempt < max_retries - 1:
                         wait_time = (attempt + 1) * 3  # Longer wait for connection issues
-                        # Only print on first attempt to reduce spam
+                        # Only print on first attempt and throttle messages to reduce spam
                         if attempt == 0 and not hasattr(self, '_last_connection_error_time'):
                             print(f"🔌 Connection issue (attempt {attempt + 1}/{max_retries}), retrying in {wait_time}s...")
                             self._last_connection_error_time = time.time()
                         elif attempt == 0 and hasattr(self, '_last_connection_error_time'):
-                            # Only print if it's been more than 30 seconds since last error message
-                            if time.time() - self._last_connection_error_time > 30:
+                            # Only print if it's been more than 2 minutes since last error message
+                            if time.time() - self._last_connection_error_time > 120:
                                 print(f"🔌 Connection issue (attempt {attempt + 1}/{max_retries}), retrying in {wait_time}s...")
                                 self._last_connection_error_time = time.time()
                         time.sleep(wait_time)
@@ -517,8 +523,9 @@ class BitcoinService(QObject):
                             self._rpc_failure_count = 0
                         self._rpc_failure_count += 1
                         
-                        if attempt == 0:
-                            print(f"❌ Connection failed after {max_retries} attempts: {error_str}")
+                        # Only log connection failures occasionally to avoid spam
+                        if self._rpc_failure_count % 5 == 1:
+                            print(f"🔌 Disconnecting due to {self._rpc_failure_count} consecutive failures")
                         return None
                 else:
                     # Unexpected error
