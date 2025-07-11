@@ -199,26 +199,73 @@ class MainWindow(QMainWindow):
         """Update profile and transaction page connection status when Bitcoin service connection changes."""
         try:
             if connected:
-                # Bitcoin Core connected - trigger wallet initialization for both pages
-                print("🔗 Updating wallet integration for Profile and Transaction pages...")
+                print("🔗 Attempting wallet integration for Profile and Transaction pages...")
                 
-                # Update profile page
-                self.profile_page.on_bitcoin_core_connected()
-                
-                # Get wallet addresses from profile page and share with transaction page
-                if hasattr(self.profile_page, 'wallet_addresses') and self.profile_page.wallet_addresses:
-                    self.transaction_page.on_bitcoin_core_connected(self.profile_page.wallet_addresses)
+                # Only call wallet integration methods if they exist (safe fallback)
+                if hasattr(self.profile_page, 'on_bitcoin_core_connected'):
+                    try:
+                        self.profile_page.on_bitcoin_core_connected()
+                        print("✅ Profile page wallet integration updated")
+                    except Exception as e:
+                        print(f"⚠️ Profile page wallet integration failed: {e}")
+                        print("⚠️ Profile page will continue with basic functionality")
                 else:
-                    # Fallback - let transaction page get addresses itself
-                    self.transaction_page.on_bitcoin_core_connected()
+                    print("⚠️ Profile page on_bitcoin_core_connected method not found - skipping wallet integration")
+                
+                # Update transaction page with safety checks
+                if hasattr(self.transaction_page, 'on_bitcoin_core_connected'):
+                    try:
+                        # Use a slight delay to avoid timing issues
+                        QTimer.singleShot(200, self._safe_update_transaction_page)
+                    except Exception as e:
+                        print(f"⚠️ Could not schedule transaction page update: {e}")
+                else:
+                    print("⚠️ Transaction page on_bitcoin_core_connected method not found - skipping wallet integration")
                 
             else:
-                # Bitcoin Core disconnected - disable wallet functionality
-                print("🔴 Disabling wallet functionality for Profile and Transaction pages...")
-                self.profile_page.on_bitcoin_core_disconnected()
-                self.transaction_page.on_bitcoin_core_disconnected()
+                print("🔴 Bitcoin Core disconnected - disabling wallet functionality...")
+                
+                # Safe disconnect for profile page
+                if hasattr(self.profile_page, 'on_bitcoin_core_disconnected'):
+                    try:
+                        self.profile_page.on_bitcoin_core_disconnected()
+                        print("✅ Profile page wallet integration disabled")
+                    except Exception as e:
+                        print(f"⚠️ Error disconnecting profile page: {e}")
+                
+                # Safe disconnect for transaction page
+                if hasattr(self.transaction_page, 'on_bitcoin_core_disconnected'):
+                    try:
+                        self.transaction_page.on_bitcoin_core_disconnected()
+                        print("✅ Transaction page wallet integration disabled")
+                    except Exception as e:
+                        print(f"⚠️ Error disconnecting transaction page: {e}")
+                        
         except Exception as e:
-            print(f"⚠️ Error updating connection status: {e}")
+            print(f"⚠️ Critical error in connection status update: {e}")
+            print("⚠️ Bitcoin Core connection should still work, but wallet integration may be limited")
+    
+    def _safe_update_transaction_page(self):
+        """Safely update transaction page with wallet addresses."""
+        try:
+            # Check if profile page has wallet addresses to share
+            if (hasattr(self.profile_page, 'wallet_addresses') and
+                hasattr(self.profile_page, 'wallet_loaded') and
+                self.profile_page.wallet_loaded and
+                self.profile_page.wallet_addresses):
+                
+                print("🔄 Sharing wallet addresses with transaction page...")
+                self.transaction_page.on_bitcoin_core_connected(self.profile_page.wallet_addresses)
+                print("✅ Transaction page updated with shared wallet addresses")
+            else:
+                # Let transaction page get addresses independently
+                print("🔄 Transaction page loading wallet addresses independently...")
+                self.transaction_page.on_bitcoin_core_connected()
+                print("✅ Transaction page wallet integration completed independently")
+                
+        except Exception as e:
+            print(f"⚠️ Error updating transaction page (non-critical): {e}")
+            print("⚠️ Transaction page will use basic functionality")
 
     def navigate(self, index):
         self.stack.setCurrentIndex(index)
