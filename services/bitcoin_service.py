@@ -333,6 +333,15 @@ class BitcoinService(QObject):
         if not self.is_connected or not self.rpc_connection:
             return
         
+        # Skip updates if we have too many consecutive connection failures
+        if hasattr(self, '_rpc_failure_count') and self._rpc_failure_count > 15:
+            # Disable connection and stop spamming retries
+            self.is_connected = False
+            self.connection_status_changed.emit(False)
+            self.status_message.emit("❌ Connection lost - too many failures")
+            print(f"🔌 Disconnecting due to {self._rpc_failure_count} consecutive failures")
+            return
+        
         try:
             # For very busy nodes, only try the most essential call
             if getattr(self, 'node_busy', False) and getattr(self, '_rpc_failure_count', 0) > 10:
@@ -486,17 +495,28 @@ class BitcoinService(QObject):
                     
             except Exception as e:
                 error_str = str(e).lower()
-                
+                print(error_str)
                 # Handle connection/timeout errors with retries
                 if any(x in error_str for x in ["timeout", "connection", "request-sent", "socket", "network"]):
                     if attempt < max_retries - 1:
                         wait_time = (attempt + 1) * 3  # Longer wait for connection issues
-                        if attempt == 0:
+                        # Only print on first attempt to reduce spam
+                        if attempt == 0 and not hasattr(self, '_last_connection_error_time'):
                             print(f"🔌 Connection issue (attempt {attempt + 1}/{max_retries}), retrying in {wait_time}s...")
+                            self._last_connection_error_time = time.time()
+                        elif attempt == 0 and hasattr(self, '_last_connection_error_time'):
+                            # Only print if it's been more than 30 seconds since last error message
+                            if time.time() - self._last_connection_error_time > 30:
+                                print(f"🔌 Connection issue (attempt {attempt + 1}/{max_retries}), retrying in {wait_time}s...")
+                                self._last_connection_error_time = time.time()
                         time.sleep(wait_time)
                         continue
                     else:
-                        # Connection completely failed
+                        # Connection completely failed - increment failure counter
+                        if not hasattr(self, '_rpc_failure_count'):
+                            self._rpc_failure_count = 0
+                        self._rpc_failure_count += 1
+                        
                         if attempt == 0:
                             print(f"❌ Connection failed after {max_retries} attempts: {error_str}")
                         return None
