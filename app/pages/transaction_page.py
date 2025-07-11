@@ -23,6 +23,8 @@ class TransactionPage(QWidget):
         self.bitcoin_service = None
         self.wallet_address = None
         self.wallet_balance = Decimal('0')
+        self.wallet_addresses = {}
+        self.wallet_loaded = False
         self.init_ui()
         
     def set_bitcoin_service(self, bitcoin_service):
@@ -47,17 +49,74 @@ class TransactionPage(QWidget):
                 self.on_transaction_error, Qt.ConnectionType.QueuedConnection)
             print("✅ Transaction page connected to Bitcoin service")
     
-    def set_wallet_address(self, address, private_key_wif=None):
-        """Set the wallet address and private key for transactions."""
-        self.wallet_address = address
-        self.private_key_wif = private_key_wif
-        self._pending_address = address  # Always store for later use
+    def set_bitcoin_core_wallet_addresses(self, wallet_addresses):
+        """Set wallet addresses from Bitcoin Core wallet."""
+        self.wallet_addresses = wallet_addresses
+        self.wallet_loaded = True
         
-        if address:
+        # Use bech32 as primary address
+        if 'bech32' in wallet_addresses and wallet_addresses['bech32']:
+            self.wallet_address = wallet_addresses['bech32']
+        elif 'p2sh_segwit' in wallet_addresses and wallet_addresses['p2sh_segwit']:
+            self.wallet_address = wallet_addresses['p2sh_segwit']
+        elif 'legacy' in wallet_addresses and wallet_addresses['legacy']:
+            self.wallet_address = wallet_addresses['legacy']
+        
+        if self.wallet_address:
             # Update the receive address display if it exists
             if hasattr(self, 'receive_address_label'):
+                self.receive_address_label.setText(self.wallet_address)
+            print(f"📍 Transaction page using Bitcoin Core wallet address: {self.wallet_address[:8]}...")
+            
+            # Start monitoring this address
+            if self.bitcoin_service:
+                self.bitcoin_service.add_address_to_monitor(self.wallet_address)
+    
+    def set_wallet_address(self, address, private_key_wif=None):
+        """Legacy method - now redirects to Bitcoin Core wallet if available."""
+        if self.wallet_loaded and self.wallet_addresses:
+            # Use Bitcoin Core wallet addresses instead
+            print("⚠️ Using Bitcoin Core wallet addresses instead of standalone address")
+            return
+            
+        # Fallback for compatibility (should not be used with Bitcoin Core integration)
+        self.wallet_address = address
+        self.private_key_wif = private_key_wif
+        self._pending_address = address
+        
+        if address:
+            if hasattr(self, 'receive_address_label'):
                 self.receive_address_label.setText(address)
-            print(f"📍 Transaction page using address: {address[:8]}...")
+            print(f"📍 Transaction page using standalone address: {address[:8]}...")
+    
+    def on_bitcoin_core_connected(self, wallet_addresses=None):
+        """Called when Bitcoin Core connection is established."""
+        try:
+            print("🟢 Bitcoin Core connected - setting up transaction wallet integration")
+            
+            if wallet_addresses:
+                self.set_bitcoin_core_wallet_addresses(wallet_addresses)
+            elif self.bitcoin_service:
+                # Get wallet addresses from the Bitcoin service
+                try:
+                    from app.utils.bitcoin_wallet_descriptor_generator import BitcoinWalletDescriptorGenerator
+                    descriptor_generator = BitcoinWalletDescriptorGenerator(self.bitcoin_service)
+                    wallet_addresses = descriptor_generator.get_all_address_types()
+                    self.set_bitcoin_core_wallet_addresses(wallet_addresses)
+                except Exception as e:
+                    print(f"⚠️ Could not get wallet addresses for transaction page: {e}")
+            
+            print("✅ Transaction page wallet integration ready")
+                
+        except Exception as e:
+            print(f"❌ Error setting up transaction wallet after Bitcoin Core connection: {e}")
+
+    def on_bitcoin_core_disconnected(self):
+        """Called when Bitcoin Core connection is lost."""
+        print("🔴 Bitcoin Core disconnected - transaction wallet functionality limited")
+        self.wallet_loaded = False
+        self.wallet_addresses = {}
+        # Keep the last known address for display purposes but disable sending
     
     def update_wallet_balance(self, address, balance_info):
         """Update wallet balance from Bitcoin service."""
@@ -513,8 +572,12 @@ Note: This is a preview only. No transaction has been created yet."""
             QMessageBox.warning(self, "Wallet Error", f"Error checking wallet status: {e}")
             return
         
-        if not self.wallet_address or not self.private_key_wif:
-            QMessageBox.warning(self, "Error", "Wallet address or private key not available.")
+        if not self.wallet_address:
+            QMessageBox.warning(self, "Error", "Wallet address not available. Please ensure Bitcoin Core wallet is loaded.")
+            return
+        
+        if not self.wallet_loaded:
+            QMessageBox.warning(self, "Error", "Bitcoin Core wallet not loaded. Please connect to Bitcoin Core first.")
             return
         
         # Get fee rate

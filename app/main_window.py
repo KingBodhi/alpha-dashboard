@@ -146,14 +146,11 @@ class MainWindow(QMainWindow):
     def _setup_bitcoin_addresses(self):
         """Setup Bitcoin addresses after UI initialization to prevent blocking."""
         try:
-            # Get the profile's Bitcoin address (may involve crypto operations)
-            bitcoin_address = self.profile_page.get_bitcoin_address()
-            if bitcoin_address:
-                self.bitcoin_service.add_address_to_monitor(bitcoin_address)
-                self.transaction_page.set_wallet_address(bitcoin_address)
-                print(f"✅ Bitcoin address monitoring configured: {bitcoin_address[:8]}...")
+            # Bitcoin Core wallet addresses will be loaded when connection is established
+            # No need to manually configure addresses here
+            print("⏳ Bitcoin Core wallet addresses will be loaded when connection is established")
         except Exception as e:
-            print(f"⚠️ Failed to setup Bitcoin address: {e}")
+            print(f"⚠️ Failed to setup Bitcoin address monitoring: {e}")
     
     def toggle_bitcoin_connection(self):
         """Toggle Bitcoin node connection."""
@@ -199,16 +196,29 @@ class MainWindow(QMainWindow):
         msg.exec()
 
     def _update_profile_connection_status(self, connected):
-        """Update profile page connection status when Bitcoin service connection changes."""
+        """Update profile and transaction page connection status when Bitcoin service connection changes."""
         try:
             if connected:
-                # Bitcoin Core connected - trigger wallet initialization
+                # Bitcoin Core connected - trigger wallet initialization for both pages
+                print("🔗 Updating wallet integration for Profile and Transaction pages...")
+                
+                # Update profile page
                 self.profile_page.on_bitcoin_core_connected()
+                
+                # Get wallet addresses from profile page and share with transaction page
+                if hasattr(self.profile_page, 'wallet_addresses') and self.profile_page.wallet_addresses:
+                    self.transaction_page.on_bitcoin_core_connected(self.profile_page.wallet_addresses)
+                else:
+                    # Fallback - let transaction page get addresses itself
+                    self.transaction_page.on_bitcoin_core_connected()
+                
             else:
                 # Bitcoin Core disconnected - disable wallet functionality
+                print("🔴 Disabling wallet functionality for Profile and Transaction pages...")
                 self.profile_page.on_bitcoin_core_disconnected()
+                self.transaction_page.on_bitcoin_core_disconnected()
         except Exception as e:
-            print(f"⚠️ Error updating profile connection status: {e}")
+            print(f"⚠️ Error updating connection status: {e}")
 
     def navigate(self, index):
         self.stack.setCurrentIndex(index)
