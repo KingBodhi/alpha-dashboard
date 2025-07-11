@@ -194,6 +194,10 @@ class MainWindow(QMainWindow):
         from PyQt6.QtWidgets import QMessageBox
         msg = QMessageBox()
         msg.setIcon(QMessageBox.Icon.Information)
+        msg.setWindowTitle("Settings Updated")
+        msg.setText("Bitcoin RPC settings have been updated.\nClick 'Connect' to use the new settings.")
+        msg.exec()
+
     def _update_profile_connection_status(self, connected):
         """Update profile page connection status when Bitcoin service connection changes."""
         try:
@@ -205,9 +209,6 @@ class MainWindow(QMainWindow):
                 self.profile_page.on_bitcoin_core_disconnected()
         except Exception as e:
             print(f"⚠️ Error updating profile connection status: {e}")
-        msg.setWindowTitle("Settings Updated")
-        msg.setText("Bitcoin RPC settings have been updated.\nClick 'Connect' to use the new settings.")
-        msg.exec()
 
     def navigate(self, index):
         self.stack.setCurrentIndex(index)
