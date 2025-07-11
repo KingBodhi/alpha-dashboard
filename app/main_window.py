@@ -35,6 +35,7 @@ class MainWindow(QMainWindow):
         self.chat_page = ChatPage()
         self.map_page = MapPage()
         self.nodes_page = NodesPage()
+        # Profile page will get Bitcoin service after it's created
         self.profile_page = ProfilePage()
         self.bitcoin_page = BitcoinPage()
         self.transaction_page = TransactionPage()
@@ -120,6 +121,13 @@ class MainWindow(QMainWindow):
         # Set up wallet service reference for manual updates
         profile_wallet.bitcoin_service = self.bitcoin_service
         
+        # Set up Bitcoin service for profile page wallet functionality
+        self.profile_page.set_bitcoin_service(self.bitcoin_service)
+        
+        # Connect Bitcoin service connection status to profile page
+        self.bitcoin_service.connection_status_changed.connect(
+            self._update_profile_connection_status, Qt.ConnectionType.QueuedConnection)
+        
         # Connect Bitcoin service to home page summary
         self.bitcoin_service.connection_status_changed.connect(
             self.home_page.bitcoin_summary.update_connection_status, Qt.ConnectionType.QueuedConnection)
@@ -186,6 +194,17 @@ class MainWindow(QMainWindow):
         from PyQt6.QtWidgets import QMessageBox
         msg = QMessageBox()
         msg.setIcon(QMessageBox.Icon.Information)
+    def _update_profile_connection_status(self, connected):
+        """Update profile page connection status when Bitcoin service connection changes."""
+        try:
+            if connected:
+                # Bitcoin Core connected - trigger wallet initialization
+                self.profile_page.on_bitcoin_core_connected()
+            else:
+                # Bitcoin Core disconnected - disable wallet functionality
+                self.profile_page.on_bitcoin_core_disconnected()
+        except Exception as e:
+            print(f"⚠️ Error updating profile connection status: {e}")
         msg.setWindowTitle("Settings Updated")
         msg.setText("Bitcoin RPC settings have been updated.\nClick 'Connect' to use the new settings.")
         msg.exec()

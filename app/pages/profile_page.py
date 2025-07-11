@@ -281,8 +281,21 @@ class ProfilePage(QWidget):
                 self.show_refresh_error("No Bitcoin service configured. Please restart the application.")
                 return
             
+            # First check if the service is already connected
+            if self.bitcoin_service.is_connected and self.bitcoin_service.rpc_connection:
+                print("✅ Bitcoin Core already connected - initializing wallet")
+                try:
+                    # Use existing connection to load wallet
+                    self.on_bitcoin_core_connected()
+                    self.show_refresh_success("Successfully connected to existing Bitcoin Core connection and loaded wallet!")
+                    return
+                except Exception as e:
+                    print(f"⚠️ Error with existing connection, trying to reconnect: {e}")
+                    # Fall through to reconnection attempt
+            
             # Try to connect/reconnect to Bitcoin Core
             try:
+                print("🔗 Attempting Bitcoin Core connection...")
                 connection_success = self.bitcoin_service.connect_to_node()
                 if connection_success:
                     print("✅ Bitcoin Core connection successful")
@@ -297,12 +310,13 @@ class ProfilePage(QWidget):
                         "Please ensure:\n"
                         "• Bitcoin Core is running\n"
                         "• RPC is enabled\n"
-                        "• Correct RPC credentials in config"
+                        "• Correct RPC credentials in config\n"
+                        "• No firewall blocking the connection"
                     )
             except Exception as e:
                 print(f"❌ Connection error: {e}")
                 self.on_bitcoin_core_disconnected()
-                self.show_refresh_error(f"Connection error: {str(e)}")
+                self.show_refresh_error(f"Connection error: {str(e)}\n\nIf Bitcoin Core is running, check RPC settings.")
                 
         except Exception as e:
             print(f"❌ Refresh wallet state error: {e}")
