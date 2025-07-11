@@ -232,13 +232,13 @@ class BitcoinService(QObject):
                 print(f"📊 Chain: {info.get('chain', 'unknown')}")
                 print(f"📦 Blocks: {info.get('blocks', 0)}")
                 
+                # Detect wallet type first
+                self._detect_wallet_type()
+                
                 # Ensure a wallet is loaded for transaction operations
                 wallet_loaded = self.ensure_wallet_loaded()
                 if not wallet_loaded:
                     print("⚠️ Warning: No wallet loaded - transaction features will be limited")
-                
-                # Detect wallet type
-                self._detect_wallet_type()
                 
                 return True
                 
@@ -334,13 +334,16 @@ class BitcoinService(QObject):
             return
         
         # Skip updates if we have too many consecutive connection failures
-        if hasattr(self, '_rpc_failure_count') and self._rpc_failure_count > 15:
-            # Disable connection and stop spamming retries
-            self.is_connected = False
-            self.connection_status_changed.emit(False)
-            self.status_message.emit("❌ Connection lost - too many failures")
-            print(f"🔌 Disconnecting due to {self._rpc_failure_count} consecutive failures")
-            return
+        if hasattr(self, '_rpc_failure_count') and self._rpc_failure_count > 25:
+            # Only disconnect after many more failures and emit warning instead
+            self.status_message.emit("⚠️ Node extremely busy - minimal updates only")
+            # Don't disconnect, just use minimal mode
+            if self._rpc_failure_count > 50:  # Much higher threshold for actual disconnect
+                self.is_connected = False
+                self.connection_status_changed.emit(False)
+                self.status_message.emit("❌ Connection lost - too many failures")
+                print(f"🔌 Disconnecting due to {self._rpc_failure_count} consecutive failures")
+                return
         
         try:
             # For very busy nodes, only try the most essential call
@@ -524,8 +527,8 @@ class BitcoinService(QObject):
                         self._rpc_failure_count += 1
                         
                         # Only log connection failures occasionally to avoid spam
-                        if self._rpc_failure_count % 5 == 1:
-                            print(f"🔌 Disconnecting due to {self._rpc_failure_count} consecutive failures")
+                        if self._rpc_failure_count % 10 == 1:
+                            print(f"🔌 Connection issues (failure count: {self._rpc_failure_count})")
                         return None
                 else:
                     # Unexpected error
@@ -636,16 +639,18 @@ class BitcoinService(QObject):
             self.address_transactions[address] = []
             print(f"📍 Now monitoring address: {address}")
             
-            # Try to import the address for better transaction detection
-            if self.is_connected:
+            # Try to import the address for better transaction detection (only for legacy wallets)
+            if self.is_connected and not self.is_descriptor_wallet:
                 try:
-                    # Try to import address for transaction tracking
+                    # Try to import address for transaction tracking (legacy wallets only)
                     import_result = self._safe_rpc_call(lambda: self.rpc_connection.importaddress(address, f"monitor_{address[:8]}", False))
                     if import_result is not None:
                         print(f"✅ Address {address[:8]}... imported for transaction tracking")
                 except Exception as e:
-                    if "already exists" not in str(e).lower() and "descriptor wallet" not in str(e).lower():
+                    if "already exists" not in str(e).lower():
                         print(f"⚠️ Could not import address {address[:8]}...: {e}")
+            elif self.is_connected and self.is_descriptor_wallet:
+                print(f"📍 Descriptor wallet - monitoring {address[:8]}... without import")
                 
                 # Update balance and transactions immediately
                 self.update_address_balance(address)
@@ -683,7 +688,7 @@ class BitcoinService(QObject):
             return
             
         # Skip if node is extremely busy
-        if getattr(self, '_rpc_failure_count', 0) > 15:
+        if getattr(self, '_rpc_failure_count', 0) > 25:
             print(f"⏳ Skipping balance update for {address[:8]}... - node too busy")
             return
             
@@ -1290,27 +1295,45 @@ class BitcoinService(QObject):
     def _detect_wallet_type(self):
         """Detect if using descriptor wallet or legacy wallet."""
         try:
-            # Try to get wallet info
-            wallet_info = self._safe_rpc_call('getwalletinfo')
+            # Try to get wallet info first
+            wallet_info = self._safe_rpc_call(lambda: self.rpc_connection.getwalletinfo())
             if wallet_info and 'descriptors' in wallet_info:
                 self.is_descriptor_wallet = wallet_info['descriptors']
                 print(f"🔍 Wallet type: {'Descriptor' if self.is_descriptor_wallet else 'Legacy'}")
-            else:
-                # Fallback: try importing a test address to detect wallet type
-                try:
-                    self.rpc_connection.importaddress("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa", "", False)
+                return
+            
+            # If no wallet loaded, try to detect by testing a command
+            try:
+                # Test with a harmless importaddress call to detect wallet type
+                test_result = self._safe_rpc_call(
+                    lambda: self.rpc_connection.importaddress("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa", "", False, False),
+                    max_retries=1
+                )
+                if test_result is not None:
                     self.is_descriptor_wallet = False
                     print("🔍 Wallet type: Legacy (detected via import test)")
-                except JSONRPCException as e:
-                    if "descriptor wallet" in str(e).lower():
-                        self.is_descriptor_wallet = True
-                        print("🔍 Wallet type: Descriptor (detected via import error)")
-                    else:
-                        self.is_descriptor_wallet = False
-                        print("🔍 Wallet type: Legacy (default)")
+                else:
+                    # Import failed, might be descriptor wallet
+                    self.is_descriptor_wallet = True
+                    print("🔍 Wallet type: Descriptor (import failed - likely descriptor)")
+            except Exception as e:
+                error_str = str(e).lower()
+                if any(phrase in error_str for phrase in ["descriptor wallet", "only legacy", "descriptors"]):
+                    self.is_descriptor_wallet = True
+                    print("🔍 Wallet type: Descriptor (detected via import error)")
+                elif "no wallet" in error_str:
+                    # No wallet loaded - assume descriptor for safety
+                    self.is_descriptor_wallet = True
+                    print("🔍 Wallet type: Descriptor (no wallet loaded - assuming descriptor)")
+                else:
+                    self.is_descriptor_wallet = False
+                    print("🔍 Wallet type: Legacy (default)")
+                    
         except Exception as e:
             print(f"⚠️ Could not detect wallet type: {e}")
-            self.is_descriptor_wallet = False
+            # Default to descriptor wallet for modern Bitcoin Core compatibility
+            self.is_descriptor_wallet = True
+            print("🔍 Wallet type: Descriptor (default for safety)")
     
     def ensure_wallet_loaded(self):
         """Ensure a wallet is loaded for transaction operations."""
