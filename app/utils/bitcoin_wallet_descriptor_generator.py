@@ -317,31 +317,22 @@ class BitcoinWalletDescriptorGenerator:
             return False
 
 
-def test_descriptor_generator():
-    """Test the descriptor-based address generator."""
+def test_descriptor_generator(bitcoin_service):
+    """Test the descriptor-based address generator.
+
+    Args:
+        bitcoin_service: Shared BitcoinService instance (must be provided).
+    """
     print("Testing BitcoinWalletDescriptorGenerator...")
     print("=" * 60)
-    
+
     try:
-        # Import BitcoinService for testing
-        import sys
-        import os
-        sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        
-        from services.bitcoin_service import BitcoinService
-        
-        # Create Bitcoin service
-        bitcoin_service = BitcoinService()
-        
-        # Try to connect
-        if not bitcoin_service.connect_to_node():
-            print("❌ Could not connect to Bitcoin Core - test cannot proceed")
-            print("Make sure Bitcoin Core is running and RPC is configured")
-            return
-        
+        # Always require explicit BitcoinService instance
+        print("✅ Using shared BitcoinService instance")
+
         # Create descriptor generator
         generator = BitcoinWalletDescriptorGenerator(bitcoin_service)
-        
+
         # Test wallet info
         print("Getting wallet info...")
         wallet_info = generator.get_wallet_info()
@@ -349,7 +340,7 @@ def test_descriptor_generator():
         print(f"Descriptor wallet: {wallet_info.get('descriptors', False)}")
         print(f"Balance: {wallet_info.get('balance', 0)} BTC")
         print()
-        
+
         # Test descriptors (if supported)
         print("Getting wallet descriptors...")
         descriptors = generator.get_wallet_descriptors()
@@ -361,7 +352,7 @@ def test_descriptor_generator():
         else:
             print("No descriptors available (legacy wallet)")
         print()
-        
+
         # Test getting existing addresses
         print("Getting existing wallet addresses...")
         addresses = generator.get_wallet_addresses()
@@ -369,22 +360,22 @@ def test_descriptor_generator():
         for addr_data in addresses[:5]:  # Show first 5
             print(f"  {addr_data['type']}: {addr_data['address']}")
         print()
-        
+
         # Test primary address
         print("Getting primary address...")
         primary = generator.get_primary_address('bech32')
         print(f"Primary bech32 address: {primary}")
         print()
-        
+
         # Test all address types
         print("Getting all address types...")
         all_addresses = generator.get_all_address_types()
         for addr_type, address in all_addresses.items():
             ownership = generator.validate_address_ownership(address)
             print(f"  {addr_type}: {address} (owned: {ownership})")
-        
+
         print("\n✅ All tests completed successfully!")
-        
+
     except Exception as e:
         print(f"❌ Test failed: {e}")
         import traceback

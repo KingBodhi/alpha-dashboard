@@ -11,7 +11,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from services.bitcoin_service import BitcoinService
-from PyQt5.QtCore import QCoreApplication, QTimer
+from PyQt6.QtCore import QCoreApplication, QTimer
 
 def test_slow_address_handling():
     """Test that slow addresses are properly tracked and throttled."""
