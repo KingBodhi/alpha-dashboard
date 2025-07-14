@@ -440,11 +440,11 @@ class BitcoinService(QObject):
 
                 # Handle both callable functions and method names with parameters
                 if callable(rpc_func_or_method):
-                    # If lambda, pass the new connection as argument if needed
-                    try:
+                    import inspect
+                    sig = inspect.signature(rpc_func_or_method)
+                    if len(sig.parameters) == 1:
                         result = rpc_func_or_method(rpc_connection)
-                    except TypeError:
-                        # If lambda doesn't accept argument, fallback to calling directly
+                    else:
                         result = rpc_func_or_method()
                 else:
                     method = getattr(rpc_connection, rpc_func_or_method)
