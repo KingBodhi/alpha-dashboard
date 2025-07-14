@@ -244,14 +244,14 @@ class BitcoinService(QObject):
                 
             except JSONRPCException as e:
                 error_msg = f"RPC Error: {e.error['message']}"
-                print(f"❌ {error_msg}")
+                logger.exception(f"❌ {error_msg}")
                 if "unauthorized" in error_msg.lower():
                     self.error_occurred.emit("Authentication failed. Check RPC username/password.")
                     break
                     
             except Exception as e:
                 error_msg = str(e)
-                print(f"❌ Connection attempt {attempt + 1} failed: {error_msg}")
+                logger.exception(f"❌ Connection attempt {attempt + 1} failed: {error_msg}")
                 
                 if "timeout" in error_msg.lower():
                     self.status_message.emit(f"Timeout (attempt {attempt + 1}) - Bitcoin node may be busy")
@@ -267,7 +267,7 @@ class BitcoinService(QObject):
                 time.sleep(wait_time)
         
         # All attempts failed - enable no-node mode
-        print("❌ All connection attempts failed - enabling no-node mode")
+        logger.error("❌ All connection attempts failed - enabling no-node mode", exc_info=True)
         self._no_node_mode = True
         self.is_connected = False
         self.connection_status_changed.emit(False)
@@ -500,7 +500,7 @@ class BitcoinService(QObject):
                 # Other errors
                 else:
                     if attempt == 0:  # Only log unexpected errors once
-                        print(f"RPC Error: {e.error.get('message', error_msg) if hasattr(e, 'error') else error_msg}")
+                        logger.exception(f"RPC Error: {e.error.get('message', error_msg) if hasattr(e, 'error') else error_msg}")
                     return None
                     
             except Exception as e:
@@ -528,12 +528,12 @@ class BitcoinService(QObject):
                         
                         # Only log connection failures occasionally to avoid spam
                         if self._rpc_failure_count % 10 == 1:
-                            print(f"🔌 Connection issues (failure count: {self._rpc_failure_count})")
+                            logger.error(f"🔌 Connection issues (failure count: {self._rpc_failure_count})", exc_info=True)
                         return None
                 else:
                     # Unexpected error
                     if attempt == 0:
-                        print(f"RPC call failed: {error_str}")
+                        logger.exception(f"RPC call failed: {error_str}")
                     return None
         
         return None
@@ -545,7 +545,7 @@ class BitcoinService(QObject):
         
         if "timeout" in error_str:
             if self.consecutive_failures <= self.max_consecutive_failures:
-                print(f"⏰ Update timeout (failure {self.consecutive_failures})")
+                logger.warning(f"⏰ Update timeout (failure {self.consecutive_failures})", exc_info=True)
                 self.status_message.emit(f"⏰ Timeout - Bitcoin node may be busy")
                 # Don't disconnect on timeout, just skip this update
                 return
@@ -555,7 +555,7 @@ class BitcoinService(QObject):
                 self.base_timeout = min(120, self.base_timeout * 1.5)
                 self.consecutive_failures = 0
         elif "connection" in error_str:
-            print(f"❌ Connection lost: {error}")
+            logger.exception(f"❌ Connection lost: {error}")
             self.is_connected = False
             self.connection_status_changed.emit(False)
             self.status_message.emit("❌ Connection lost - attempting to reconnect")
@@ -563,7 +563,7 @@ class BitcoinService(QObject):
             # Try to reconnect
             self.start_monitoring()
         else:
-            print(f"❌ Update error: {error}")
+            logger.exception(f"❌ Update error: {error}")
             self.status_message.emit(f"❌ Update error: {str(error)}")
         
         # Reset failure count if too many
@@ -756,7 +756,7 @@ class BitcoinService(QObject):
                         self.status_message.emit(f"📍 Monitoring address - No funds detected")
                         self._zero_balance_shown = True
             except Exception as e:
-                print(f"❌ Error updating balance for {address}: {e}")
+                logger.exception(f"❌ Error updating balance for {address}: {e}")
                 balance_info = {
                     'balance_btc': Decimal('0'),
                     'balance_usd': 0.0,
@@ -874,7 +874,7 @@ class BitcoinService(QObject):
                 self.address_transactions[address].sort(key=lambda x: x.get('time', 0), reverse=True)
                 self.address_transactions_updated.emit(address, self.address_transactions[address])
             except Exception as e:
-                print(f"❌ Error updating transactions for {address}: {e}")
+                logger.exception(f"❌ Error updating transactions for {address}: {e}")
                 self.address_transactions_updated.emit(address, [])
         threading.Thread(target=worker, daemon=True).start()
     
@@ -928,7 +928,7 @@ class BitcoinService(QObject):
                         print(f"📋 Periodic transaction update for {current_address[:8]}...")
                         self.update_address_transactions(current_address)
             except Exception as e:
-                print(f"❌ Error updating all monitored addresses: {e}")
+                logger.exception(f"❌ Error updating all monitored addresses: {e}")
         threading.Thread(target=worker, daemon=True).start()
     
     def _adjust_update_frequency(self, success=True):

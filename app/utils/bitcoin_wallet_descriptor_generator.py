@@ -68,7 +68,7 @@ class BitcoinWalletDescriptorGenerator:
             return wallet_info
             
         except Exception as e:
-            logger.error(f"Error getting wallet info: {e}")
+            logger.error(f"Error getting wallet info: {e}", exc_info=True)
             raise
     
     def get_wallet_descriptors(self):
@@ -90,7 +90,7 @@ class BitcoinWalletDescriptorGenerator:
                 return None
                 
         except Exception as e:
-            logger.warning(f"Error getting descriptors (wallet may not support them): {e}")
+            logger.warning(f"Error getting descriptors (wallet may not support them): {e}", exc_info=True)
             return None
     
     def generate_new_address(self, address_type='bech32', label=None):
@@ -141,7 +141,7 @@ class BitcoinWalletDescriptorGenerator:
                 raise RuntimeError(f"Failed to generate {address_type} address")
                 
         except Exception as e:
-            logger.error(f"Error generating new address: {e}")
+            logger.error(f"Error generating new address: {e}", exc_info=True)
             raise
     
     def get_wallet_addresses(self, include_change=False):
@@ -194,7 +194,7 @@ class BitcoinWalletDescriptorGenerator:
             return addresses
             
         except Exception as e:
-            logger.error(f"Error getting wallet addresses: {e}")
+            logger.error(f"Error getting wallet addresses: {e}", exc_info=True)
             return []
     
     def get_address_info(self, address):
@@ -210,7 +210,7 @@ class BitcoinWalletDescriptorGenerator:
             return addr_info
             
         except Exception as e:
-            logger.warning(f"Could not get info for address {address[:16]}...: {e}")
+            logger.warning(f"Could not get info for address {address[:16]}...: {e}", exc_info=True)
             return None
     
     def _detect_address_type(self, address):
@@ -249,7 +249,7 @@ class BitcoinWalletDescriptorGenerator:
             return self.generate_new_address(preferred_type, "Primary Dashboard Address")
             
         except Exception as e:
-            logger.error(f"Error getting primary address: {e}")
+            logger.error(f"Error getting primary address: {e}", exc_info=True)
             raise
     
     def get_all_address_types(self, base_address=None):
@@ -290,7 +290,7 @@ class BitcoinWalletDescriptorGenerator:
             return addresses
             
         except Exception as e:
-            logger.error(f"Error getting all address types: {e}")
+            logger.error(f"Error getting all address types: {e}", exc_info=True)
             raise
     
     def validate_address_ownership(self, address):
@@ -313,7 +313,7 @@ class BitcoinWalletDescriptorGenerator:
             return False
             
         except Exception as e:
-            logger.warning(f"Error validating address ownership: {e}")
+            logger.warning(f"Error validating address ownership: {e}", exc_info=True)
             return False
 
 

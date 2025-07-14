@@ -632,20 +632,23 @@ Note: This is a preview only. No transaction has been created yet."""
         # Update history display
         self.update_transaction_history_display()
     
-    def on_transaction_error(self, error_message):
-        """Handle transaction error and provide user feedback."""
+    def on_transaction_error(self, error):
+        """Handle transaction error and provide user feedback with full context."""
+        import traceback
         self.send_button.setEnabled(True)
         self.send_button.setText("Send Bitcoin")
-        # Show error message and optionally log for diagnostics
+        # Show error message and log full error object and stack trace for diagnostics
+        error_message = str(error)
+        error_trace = traceback.format_exc()
         QMessageBox.critical(
             self,
             "Transaction Error",
-            f"Transaction failed:\n\n{error_message}"
+            f"Transaction failed:\n\n{error_message}\n\nStack Trace:\n{error_trace}"
         )
         # Optionally, show a status message or log to a UI status bar
         if hasattr(self, 'balance_label'):
             self.balance_label.setText("Error: Transaction failed")
-        print(f"❌ Transaction error: {error_message}")
+        print(f"❌ Transaction error: {error_message}\n{error_trace}")
     
     def clear_send_form(self):
         """Clear the send form."""
