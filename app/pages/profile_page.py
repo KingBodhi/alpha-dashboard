@@ -267,64 +267,39 @@ class ProfilePage(QWidget):
         print("📋 Profile loaded - waiting for Bitcoin Core connection to load wallet addresses")
 
     def refresh_wallet_state(self):
-        """Refresh wallet state - check for Bitcoin Core connection and reload wallet."""
-        try:
-            print("🔄 Refreshing wallet state...")
-            
-            # Update button state
-            self.refresh_wallet_button.setText("🔄 Checking...")
-            self.refresh_wallet_button.setEnabled(False)
-            
-            # Check if we have a bitcoin service
-            if not self.bitcoin_service:
-                print("⚠️ No Bitcoin service available")
-                self.show_refresh_error("No Bitcoin service configured. Please restart the application.")
-                return
-            
-            # First check if the service is already connected
-            if self.bitcoin_service.is_connected and self.bitcoin_service.rpc_connection:
-                print("✅ Bitcoin Core already connected - initializing wallet")
-                try:
-                    # Use existing connection to load wallet
-                    self.on_bitcoin_core_connected()
-                    self.show_refresh_success("Successfully connected to existing Bitcoin Core connection and loaded wallet!")
-                    return
-                except Exception as e:
-                    print(f"⚠️ Error with existing connection, trying to reconnect: {e}")
-                    # Fall through to reconnection attempt
-            
-            # Try to connect/reconnect to Bitcoin Core
-            try:
-                print("🔗 Attempting Bitcoin Core connection...")
-                connection_success = self.bitcoin_service.connect_to_node()
-                if connection_success:
-                    print("✅ Bitcoin Core connection successful")
-                    # Trigger wallet initialization
-                    self.on_bitcoin_core_connected()
-                    self.show_refresh_success("Successfully connected to Bitcoin Core and loaded wallet!")
-                else:
-                    print("❌ Bitcoin Core connection failed")
-                    self.on_bitcoin_core_disconnected()
-                    self.show_refresh_error(
-                        "Could not connect to Bitcoin Core.\n"
-                        "Please ensure:\n"
-                        "• Bitcoin Core is running\n"
-                        "• RPC is enabled\n"
-                        "• Correct RPC credentials in config\n"
-                        "• No firewall blocking the connection"
-                    )
-            except Exception as e:
-                print(f"❌ Connection error: {e}")
-                self.on_bitcoin_core_disconnected()
-                self.show_refresh_error(f"Connection error: {str(e)}\n\nIf Bitcoin Core is running, check RPC settings.")
-                
-        except Exception as e:
-            print(f"❌ Refresh wallet state error: {e}")
-            self.show_refresh_error(f"Refresh failed: {str(e)}")
-        finally:
-            # Reset button state
+        """Refresh wallet state - check for Bitcoin Core connection and reload wallet asynchronously."""
+        print("🔄 Refreshing wallet state...")
+        self.refresh_wallet_button.setText("🔄 Checking...")
+        self.refresh_wallet_button.setEnabled(False)
+
+        # Connect signals for async UI updates
+        if self.bitcoin_service:
+            self.bitcoin_service.connection_status_changed.connect(self.on_connection_status_changed, Qt.ConnectionType.QueuedConnection)
+            self.bitcoin_service.status_message.connect(self.on_status_message, Qt.ConnectionType.QueuedConnection)
+        else:
+            print("⚠️ No Bitcoin service available")
+            self.show_refresh_error("No Bitcoin service configured. Please restart the application.")
             self.refresh_wallet_button.setText("🔄 Check Bitcoin Core Connection")
             self.refresh_wallet_button.setEnabled(True)
+            return
+
+        # Trigger connection in background thread (service already threaded)
+        self.bitcoin_service.connect_to_node()
+        # UI updates will be handled by the slots below
+
+    @pyqtSlot(bool)
+    def on_connection_status_changed(self, connected):
+        if connected:
+            self.on_bitcoin_core_connected()
+            self.show_refresh_success("Successfully connected to Bitcoin Core and loaded wallet!")
+        else:
+            self.on_bitcoin_core_disconnected()
+        self.refresh_wallet_button.setText("🔄 Check Bitcoin Core Connection")
+        self.refresh_wallet_button.setEnabled(True)
+
+    @pyqtSlot(str)
+    def on_status_message(self, msg):
+        self.wallet_status_label.setText(msg)
 
     def show_refresh_success(self, message):
         """Show success message for wallet refresh."""

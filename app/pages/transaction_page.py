@@ -534,83 +534,49 @@ Note: This is a preview only. No transaction has been created yet."""
         return 0.00005000  # Default
     
     def send_transaction(self):
-        """Send the transaction using Bitcoin Core."""
-        # Validate inputs
+        """Send the transaction using Bitcoin Core asynchronously."""
         recipient = self.recipient_input.text().strip()
         amount = self.amount_input.value()
         description = self.description_input.text().strip()
-        
+
         if not recipient:
             QMessageBox.warning(self, "Error", "Please enter a recipient address.")
             return
-        
+
         if amount <= 0:
             QMessageBox.warning(self, "Error", "Please enter a valid amount.")
             return
-        
+
         if amount > float(self.wallet_balance):
             QMessageBox.warning(self, "Error", f"Insufficient funds. Available: {self.wallet_balance:.8f} BTC")
             return
-        
+
         if not self.bitcoin_service or not self.bitcoin_service.is_connected:
             QMessageBox.warning(self, "Error", "Not connected to Bitcoin node. Please check your connection.")
             return
-        
-        # Check if wallet is loaded on the Bitcoin node
-        try:
-            if hasattr(self.bitcoin_service, 'ensure_wallet_loaded'):
-                wallet_loaded = self.bitcoin_service.ensure_wallet_loaded()
-                if not wallet_loaded:
-                    QMessageBox.warning(
-                        self, 
-                        "Wallet Error", 
-                        "No wallet is loaded on the Bitcoin node. Please create or load a wallet first.\n\n"
-                        "You can run: bitcoin-cli createwallet \"dashboard_wallet\""
-                    )
-                    return
-        except Exception as e:
-            QMessageBox.warning(self, "Wallet Error", f"Error checking wallet status: {e}")
-            return
-        
-        if not self.wallet_address:
-            QMessageBox.warning(self, "Error", "Wallet address not available. Please ensure Bitcoin Core wallet is loaded.")
-            return
-        
-        if not self.wallet_loaded:
-            QMessageBox.warning(self, "Error", "Bitcoin Core wallet not loaded. Please connect to Bitcoin Core first.")
-            return
-        
-        # Get fee rate
+
+        # All wallet checks and transaction creation are now threaded in BitcoinService
         fee_rate = self.get_selected_fee_rate()
-        
-        # Show confirmation dialog
         msg = QMessageBox()
         msg.setIcon(QMessageBox.Icon.Question)
         msg.setWindowTitle("Confirm Transaction")
         msg.setText(f"Send {amount:.8f} BTC to {recipient}?")
         msg.setDetailedText(f"From: {self.wallet_address}\nTo: {recipient}\nAmount: {amount:.8f} BTC\nFee Rate: {fee_rate} sat/byte\nDescription: {description}")
         msg.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-        
+
         if msg.exec() == QMessageBox.StandardButton.Yes:
-            # Disable send button to prevent double-spending
             self.send_button.setEnabled(False)
             self.send_button.setText("Sending...")
-            
-            # Convert fee rate from sat/byte to BTC/byte
             fee_rate_btc = fee_rate / 100000000  # satoshis to BTC
-            
-            # Create and broadcast transaction using Bitcoin service
-            tx_id = self.bitcoin_service.create_and_send_transaction(
+
+            # Call the service method (threaded)
+            self.bitcoin_service.create_and_send_transaction(
                 to_address=recipient,
                 amount=amount,
                 fee_rate=fee_rate_btc,
                 from_address=self.wallet_address
             )
-            
-            if not tx_id:
-                # Transaction failed
-                self.send_button.setEnabled(True)
-                self.send_button.setText("Send Bitcoin")
+            # Do NOT expect a return value; UI will update via signals
     
     def get_selected_fee_rate(self):
         """Get the selected fee rate in satoshis per byte."""
@@ -667,15 +633,19 @@ Note: This is a preview only. No transaction has been created yet."""
         self.update_transaction_history_display()
     
     def on_transaction_error(self, error_message):
-        """Handle transaction error."""
+        """Handle transaction error and provide user feedback."""
         self.send_button.setEnabled(True)
         self.send_button.setText("Send Bitcoin")
-        
+        # Show error message and optionally log for diagnostics
         QMessageBox.critical(
             self,
             "Transaction Error",
             f"Transaction failed:\n\n{error_message}"
         )
+        # Optionally, show a status message or log to a UI status bar
+        if hasattr(self, 'balance_label'):
+            self.balance_label.setText("Error: Transaction failed")
+        print(f"❌ Transaction error: {error_message}")
     
     def clear_send_form(self):
         """Clear the send form."""

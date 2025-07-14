@@ -665,135 +665,109 @@ class BitcoinService(QObject):
             print(f"📍 Stopped monitoring address: {address}")
     
     def update_address_balance(self, address):
-        """Update balance for a specific address with busy node handling."""
-        # In no-node mode, emit zero balance but don't spam errors
-        if hasattr(self, '_no_node_mode') and self._no_node_mode:
-            if not hasattr(self, '_no_node_message_shown'):
-                print(f"📍 No-node mode: Cannot check balance for {address[:8]}... - Bitcoin Core required")
-                self._no_node_message_shown = True
-            
-            balance_info = {
-                'balance_btc': Decimal('0'),
-                'balance_usd': 0.0,
-                'confirmed': Decimal('0'),
-                'unconfirmed': Decimal('0'),
-                'utxo_count': 0,
-                'last_updated': time.time(),
-                'error': 'No Bitcoin Core node available'
-            }
-            self.address_balance_updated.emit(address, balance_info)
-            return
-            
-        if not self.is_connected or not self.rpc_connection:
-            return
-            
-        # Skip if node is extremely busy
-        if getattr(self, '_rpc_failure_count', 0) > 25:
-            print(f"⏳ Skipping balance update for {address[:8]}... - node too busy")
-            return
-            
-        try:
-            balance_btc = Decimal('0')
-            utxo_count = 0
-            
-            # For descriptor wallets and busy nodes, use scantxoutset with longer timeout
+        """Update balance for a specific address in a dedicated worker thread."""
+        def worker():
             try:
-                print(f"📊 Checking balance for {address[:8]}... (this may take 60+ seconds on slow nodes)")
-                start_time = time.time()
-                
-                scan_result = self._safe_rpc_call(
-                    lambda: self.rpc_connection.scantxoutset("start", [f"addr({address})"]),
-                    timeout_override=120,  # 2 minute timeout for ultra-slow scantxoutset
-                    max_retries=1  # Don't retry slow operations
-                )
-                
-                elapsed_time = time.time() - start_time
-                
-                if scan_result:
-                    balance_btc = Decimal(str(scan_result.get('total_amount', 0)))
-                    utxo_count = len(scan_result.get('unspents', []))
-                    
-                    # Track slow addresses to avoid frequent rechecks
-                    if elapsed_time > 20:  # If it took more than 20 seconds (reduced from 30)
+                # Original logic moved here
+                if hasattr(self, '_no_node_mode') and self._no_node_mode:
+                    if not hasattr(self, '_no_node_message_shown'):
+                        print(f"📍 No-node mode: Cannot check balance for {address[:8]}... - Bitcoin Core required")
+                        self._no_node_message_shown = True
+                    balance_info = {
+                        'balance_btc': Decimal('0'),
+                        'balance_usd': 0.0,
+                        'confirmed': Decimal('0'),
+                        'unconfirmed': Decimal('0'),
+                        'utxo_count': 0,
+                        'last_updated': time.time(),
+                        'error': 'No Bitcoin Core node available'
+                    }
+                    self.address_balance_updated.emit(address, balance_info)
+                    return
+
+                if not self.is_connected or not self.rpc_connection:
+                    return
+
+                if getattr(self, '_rpc_failure_count', 0) > 25:
+                    print(f"⏳ Skipping balance update for {address[:8]}... - node too busy")
+                    return
+
+                balance_btc = Decimal('0')
+                utxo_count = 0
+
+                try:
+                    print(f"📊 Checking balance for {address[:8]}... (threaded)")
+                    start_time = time.time()
+                    scan_result = self._safe_rpc_call(
+                        lambda: self.rpc_connection.scantxoutset("start", [f"addr({address})"]),
+                        timeout_override=120,
+                        max_retries=1
+                    )
+                    elapsed_time = time.time() - start_time
+                    if scan_result:
+                        balance_btc = Decimal(str(scan_result.get('total_amount', 0)))
+                        utxo_count = len(scan_result.get('unspents', []))
+                        if elapsed_time > 20:
+                            if not hasattr(self, '_slow_scan_addresses'):
+                                self._slow_scan_addresses = {}
+                            self._slow_scan_addresses[address] = time.time()
+                            print(f"⚠️ SLOW scantxoutset: {elapsed_time:.1f}s - will reduce frequency for this address")
+                            self.address_performance_status.emit(address, f"⏱️ Slow node - updates every 15min")
+                        print(f"📊 Balance check complete: {balance_btc:.8f} BTC ({utxo_count} UTXOs) in {elapsed_time:.1f}s")
+                    else:
+                        print(f"⏳ Balance check timed out for {address[:8]}... after {elapsed_time:.1f}s")
                         if not hasattr(self, '_slow_scan_addresses'):
                             self._slow_scan_addresses = {}
                         self._slow_scan_addresses[address] = time.time()
-                        print(f"⚠️ SLOW scantxoutset: {elapsed_time:.1f}s - will reduce frequency for this address")
-                        # Emit performance status update
                         self.address_performance_status.emit(address, f"⏱️ Slow node - updates every 15min")
-                    
-                    print(f"📊 Balance check complete: {balance_btc:.8f} BTC ({utxo_count} UTXOs) in {elapsed_time:.1f}s")
+                        return
+                except Exception as e:
+                    error_str = str(e).lower()
+                    if any(phrase in error_str for phrase in ['busy', 'request-sent', 'timeout', 'loading block index', 'verifying']):
+                        print(f"⏳ Balance check failed - node busy, will retry later for {address[:8]}...")
+                        return
+                    else:
+                        print(f"⚠️ Balance check error for {address[:8]}...: {e}")
+                        balance_btc = Decimal('0')
+
+                old_balance = self.address_balances.get(address, Decimal('0'))
+                self.address_balances[address] = balance_btc
+                btc_price_usd = self.get_btc_price_estimate()
+                balance_usd = float(balance_btc) * btc_price_usd
+                balance_info = {
+                    'balance_btc': balance_btc,
+                    'balance_usd': balance_usd,
+                    'confirmed': balance_btc,
+                    'unconfirmed': Decimal('0'),
+                    'utxo_count': utxo_count,
+                    'last_updated': time.time()
+                }
+                self.address_balance_updated.emit(address, balance_info)
+                if balance_btc > 0:
+                    print(f"💰 Balance: {balance_btc:.8f} BTC (${balance_usd:.2f}) for {address[:8]}...")
+                    self.status_message.emit(f"✅ Balance: {balance_btc:.8f} BTC")
+                    if balance_btc > old_balance:
+                        print(f"📈 Balance increased - will update transactions in next cycle")
+                        if not hasattr(self, '_pending_tx_updates'):
+                            self._pending_tx_updates = set()
+                        self._pending_tx_updates.add(address)
                 else:
-                    print(f"⏳ Balance check timed out for {address[:8]}... after {elapsed_time:.1f}s")
-                    # Mark as slow to avoid immediate retry
-                    if not hasattr(self, '_slow_scan_addresses'):
-                        self._slow_scan_addresses = {}
-                    self._slow_scan_addresses[address] = time.time()
-                    # Emit performance status update
-                    self.address_performance_status.emit(address, f"⏱️ Slow node - updates every 15min")
-                    return
-                    
+                    if not hasattr(self, '_zero_balance_shown'):
+                        self.status_message.emit(f"📍 Monitoring address - No funds detected")
+                        self._zero_balance_shown = True
             except Exception as e:
-                error_str = str(e).lower()
-                if any(phrase in error_str for phrase in ['busy', 'request-sent', 'timeout', 'loading block index', 'verifying']):
-                    print(f"⏳ Balance check failed - node busy, will retry later for {address[:8]}...")
-                    # Don't treat this as an error, just wait for next cycle
-                    return
-                else:
-                    print(f"⚠️ Balance check error for {address[:8]}...: {e}")
-                    # Emit zero balance on real error
-                    balance_btc = Decimal('0')
-            
-            # Update stored balance
-            old_balance = self.address_balances.get(address, Decimal('0'))
-            self.address_balances[address] = balance_btc
-            
-            # Get current Bitcoin price for USD conversion
-            btc_price_usd = self.get_btc_price_estimate()
-            balance_usd = float(balance_btc) * btc_price_usd
-            
-            balance_info = {
-                'balance_btc': balance_btc,
-                'balance_usd': balance_usd,
-                'confirmed': balance_btc,  # For now, treat all as confirmed
-                'unconfirmed': Decimal('0'),
-                'utxo_count': utxo_count,
-                'last_updated': time.time()
-            }
-            
-            # Emit signal with balance update
-            self.address_balance_updated.emit(address, balance_info)
-            
-            # Show balance updates
-            if balance_btc > 0:
-                print(f"💰 Balance: {balance_btc:.8f} BTC (${balance_usd:.2f}) for {address[:8]}...")
-                self.status_message.emit(f"✅ Balance: {balance_btc:.8f} BTC")
-                
-                # If balance increased, schedule transaction update for later (don't do it immediately on busy nodes)
-                if balance_btc > old_balance:
-                    print(f"📈 Balance increased - will update transactions in next cycle")
-                    # Set a flag to update transactions in next cycle rather than immediately
-                    if not hasattr(self, '_pending_tx_updates'):
-                        self._pending_tx_updates = set()
-                    self._pending_tx_updates.add(address)
-            else:
-                if not hasattr(self, '_zero_balance_shown'):
-                    self.status_message.emit(f"📍 Monitoring address - No funds detected")
-                    self._zero_balance_shown = True
-                
-        except Exception as e:
-            print(f"❌ Error updating balance for {address}: {e}")
-            # Emit zero balance on error
-            balance_info = {
-                'balance_btc': Decimal('0'),
-                'balance_usd': 0.0,
-                'confirmed': Decimal('0'),
-                'unconfirmed': Decimal('0'),
-                'utxo_count': 0,
-                'last_updated': time.time(),
-                'error': str(e)
-            }
-            self.address_balance_updated.emit(address, balance_info)
+                print(f"❌ Error updating balance for {address}: {e}")
+                balance_info = {
+                    'balance_btc': Decimal('0'),
+                    'balance_usd': 0.0,
+                    'confirmed': Decimal('0'),
+                    'unconfirmed': Decimal('0'),
+                    'utxo_count': 0,
+                    'last_updated': time.time(),
+                    'error': str(e)
+                }
+                self.address_balance_updated.emit(address, balance_info)
+        threading.Thread(target=worker, daemon=True).start()
     
     def get_btc_price_estimate(self):
         """Get Bitcoin price estimate (placeholder - would use real API)."""
@@ -801,212 +775,161 @@ class BitcoinService(QObject):
         return 45000.0  # Example BTC price in USD
     
     def update_address_transactions(self, address):
-        """Update transaction history for a specific address."""
-        if not self.is_connected or not self.rpc_connection:
-            return
-            
-        try:
-            transactions = []
-            
-            # Method 1: Try to get transactions from wallet if address is imported
+        """Update transaction history for a specific address in a dedicated worker thread."""
+        def worker():
             try:
-                # Get wallet transactions
-                wallet_txs = self._safe_rpc_call(lambda: self.rpc_connection.listtransactions("*", 1000))
-                if wallet_txs:
-                    # Filter transactions for our address
-                    for tx in wallet_txs:
-                        if tx.get('address') == address:
-                            formatted_tx = {
-                                'txid': tx.get('txid', ''),
-                                'amount': abs(float(tx.get('amount', 0))),
-                                'fee': abs(float(tx.get('fee', 0))) if tx.get('fee') else 0,
-                                'confirmations': tx.get('confirmations', 0),
-                                'time': tx.get('time', int(time.time())),
-                                'timestamp': datetime.fromtimestamp(tx.get('time', int(time.time()))).isoformat(),
-                                'type': 'receive' if tx.get('amount', 0) > 0 else 'send',
-                                'address': address,
-                                'category': tx.get('category', ''),
-                                'blockhash': tx.get('blockhash', ''),
-                                'blockindex': tx.get('blockindex', 0),
-                                'blocktime': tx.get('blocktime', 0),
-                                'status': 'confirmed' if tx.get('confirmations', 0) >= 6 else 'pending'
-                            }
-                            transactions.append(formatted_tx)
-                    
-                    print(f"📋 Found {len(transactions)} wallet transactions for {address[:8]}...")
-                    
-            except Exception as wallet_error:
-                print(f"⚠️ Could not get wallet transactions: {wallet_error}")
-                
-                # Method 2: Try to scan recent blocks for transactions to this address
+                if not self.is_connected or not self.rpc_connection:
+                    return
+                transactions = []
                 try:
-                    # Get recent blocks and scan for transactions
-                    best_block_hash = self._safe_rpc_call(lambda: self.rpc_connection.getbestblockhash())
-                    if best_block_hash:
-                        print(f"🔍 Scanning recent blocks for transactions to {address[:8]}...")
-                        # Scan last 50 blocks for transactions (increased from 10)
-                        current_hash = best_block_hash
-                        blocks_scanned = 0
-                        
-                        for i in range(50):  # Increased block scan range
-                            if not current_hash:
-                                break
-                                
-                            block = self._safe_rpc_call(lambda: self.rpc_connection.getblock(current_hash, 2))
-                            if block and 'tx' in block:
-                                blocks_scanned += 1
-                                
-                                for tx in block['tx']:
-                                    # Check if transaction involves our address
-                                    tx_involves_address = False
-                                    tx_amount = 0
-                                    tx_type = 'unknown'
-                                    
-                                    # Check outputs for receives
-                                    for vout in tx.get('vout', []):
-                                        script_pub_key = vout.get('scriptPubKey', {})
-                                        addresses_in_output = script_pub_key.get('addresses', [])
-                                        
-                                        # Also check for single address field
-                                        if 'address' in script_pub_key:
-                                            addresses_in_output.append(script_pub_key['address'])
-                                        
-                                        if address in addresses_in_output:
-                                            tx_involves_address = True
-                                            tx_amount += vout.get('value', 0)
-                                            tx_type = 'receive'
-                                    
-                                    # Check inputs for sends (if this address was an input)
-                                    for vin in tx.get('vin', []):
-                                        if 'txid' in vin and 'vout' in vin:
-                                            # Get the previous transaction to check if our address was the sender
-                                            prev_tx = self._safe_rpc_call(lambda: self.rpc_connection.getrawtransaction(vin['txid'], True))
-                                            if prev_tx and 'vout' in prev_tx:
-                                                prev_output = prev_tx['vout'][vin['vout']]
-                                                prev_addresses = prev_output.get('scriptPubKey', {}).get('addresses', [])
-                                                if address in prev_addresses:
-                                                    tx_involves_address = True
-                                                    tx_amount = prev_output.get('value', 0)
-                                                    tx_type = 'send'
-                                    
-                                    if tx_involves_address:
-                                        # Get current block height for confirmations
-                                        current_height = self.last_blockchain_info.get('blocks', 0)
-                                        block_height = block.get('height', 0)
-                                        confirmations = max(0, current_height - block_height + 1)
-                                        
-                                        formatted_tx = {
-                                            'txid': tx.get('txid', ''),
-                                            'amount': tx_amount,
-                                            'fee': 0,  # Fee calculation would require input analysis
-                                            'confirmations': confirmations,
-                                            'time': block.get('time', int(time.time())),
-                                            'timestamp': datetime.fromtimestamp(block.get('time', int(time.time()))).isoformat(),
-                                            'type': tx_type,
-                                            'address': address,
-                                            'blockhash': block.get('hash', ''),
-                                            'blockindex': block.get('height', 0),
-                                            'blocktime': block.get('time', 0),
-                                            'status': 'confirmed' if confirmations >= 6 else 'pending'
-                                        }
-                                        transactions.append(formatted_tx)
-                                        print(f"🔍 Found {tx_type} transaction: {tx['txid'][:16]}... ({tx_amount:.8f} BTC)")
-                                
-                                # Move to previous block
-                                current_hash = block.get('previousblockhash')
-                        
-                        print(f"📋 Scanned {blocks_scanned} blocks, found {len(transactions)} blockchain transactions for {address[:8]}...")
-                        
-                except Exception as block_error:
-                    print(f"⚠️ Could not scan blockchain: {block_error}")
-            
-            # Update stored transactions and emit signal
-            if address not in self.address_transactions:
-                self.address_transactions[address] = []
-            
-            # Merge new transactions with existing ones (avoid duplicates)
-            existing_txids = {tx.get('txid') for tx in self.address_transactions[address]}
-            new_transactions = [tx for tx in transactions if tx.get('txid') not in existing_txids]
-            
-            if new_transactions:
-                self.address_transactions[address].extend(new_transactions)
-                print(f"📋 Added {len(new_transactions)} new transactions for {address[:8]}...")
-            
-            # Sort by time (newest first)
-            self.address_transactions[address].sort(key=lambda x: x.get('time', 0), reverse=True)
-            
-            # Emit signal with updated transactions
-            self.address_transactions_updated.emit(address, self.address_transactions[address])
-                
-        except Exception as e:
-            print(f"❌ Error updating transactions for {address}: {e}")
-            # Emit empty list to avoid UI hanging
-            self.address_transactions_updated.emit(address, [])
+                    wallet_txs = self._safe_rpc_call(lambda: self.rpc_connection.listtransactions("*", 1000))
+                    if wallet_txs:
+                        for tx in wallet_txs:
+                            if tx.get('address') == address:
+                                formatted_tx = {
+                                    'txid': tx.get('txid', ''),
+                                    'amount': abs(float(tx.get('amount', 0))),
+                                    'fee': abs(float(tx.get('fee', 0))) if tx.get('fee') else 0,
+                                    'confirmations': tx.get('confirmations', 0),
+                                    'time': tx.get('time', int(time.time())),
+                                    'timestamp': datetime.fromtimestamp(tx.get('time', int(time.time()))).isoformat(),
+                                    'type': 'receive' if tx.get('amount', 0) > 0 else 'send',
+                                    'address': address,
+                                    'category': tx.get('category', ''),
+                                    'blockhash': tx.get('blockhash', ''),
+                                    'blockindex': tx.get('blockindex', 0),
+                                    'blocktime': tx.get('blocktime', 0),
+                                    'status': 'confirmed' if tx.get('confirmations', 0) >= 6 else 'pending'
+                                }
+                                transactions.append(formatted_tx)
+                        print(f"📋 Found {len(transactions)} wallet transactions for {address[:8]}...")
+                except Exception as wallet_error:
+                    print(f"⚠️ Could not get wallet transactions: {wallet_error}")
+                    try:
+                        best_block_hash = self._safe_rpc_call(lambda: self.rpc_connection.getbestblockhash())
+                        if best_block_hash:
+                            print(f"🔍 Scanning recent blocks for transactions to {address[:8]}...")
+                            current_hash = best_block_hash
+                            blocks_scanned = 0
+                            for i in range(50):
+                                if not current_hash:
+                                    break
+                                block = self._safe_rpc_call(lambda: self.rpc_connection.getblock(current_hash, 2))
+                                if block and 'tx' in block:
+                                    blocks_scanned += 1
+                                    for tx in block['tx']:
+                                        tx_involves_address = False
+                                        tx_amount = 0
+                                        tx_type = 'unknown'
+                                        for vout in tx.get('vout', []):
+                                            script_pub_key = vout.get('scriptPubKey', {})
+                                            addresses_in_output = script_pub_key.get('addresses', [])
+                                            if 'address' in script_pub_key:
+                                                addresses_in_output.append(script_pub_key['address'])
+                                            if address in addresses_in_output:
+                                                tx_involves_address = True
+                                                tx_amount += vout.get('value', 0)
+                                                tx_type = 'receive'
+                                        for vin in tx.get('vin', []):
+                                            if 'txid' in vin and 'vout' in vin:
+                                                prev_tx = self._safe_rpc_call(lambda: self.rpc_connection.getrawtransaction(vin['txid'], True))
+                                                if prev_tx and 'vout' in prev_tx:
+                                                    prev_output = prev_tx['vout'][vin['vout']]
+                                                    prev_addresses = prev_output.get('scriptPubKey', {}).get('addresses', [])
+                                                    if address in prev_addresses:
+                                                        tx_involves_address = True
+                                                        tx_amount = prev_output.get('value', 0)
+                                                        tx_type = 'send'
+                                        if tx_involves_address:
+                                            current_height = self.last_blockchain_info.get('blocks', 0)
+                                            block_height = block.get('height', 0)
+                                            confirmations = max(0, current_height - block_height + 1)
+                                            formatted_tx = {
+                                                'txid': tx.get('txid', ''),
+                                                'amount': tx_amount,
+                                                'fee': 0,
+                                                'confirmations': confirmations,
+                                                'time': block.get('time', int(time.time())),
+                                                'timestamp': datetime.fromtimestamp(block.get('time', int(time.time()))).isoformat(),
+                                                'type': tx_type,
+                                                'address': address,
+                                                'blockhash': block.get('hash', ''),
+                                                'blockindex': block.get('height', 0),
+                                                'blocktime': block.get('time', 0),
+                                                'status': 'confirmed' if confirmations >= 6 else 'pending'
+                                            }
+                                            transactions.append(formatted_tx)
+                                            print(f"🔍 Found {tx_type} transaction: {tx['txid'][:16]}... ({tx_amount:.8f} BTC)")
+                                    current_hash = block.get('previousblockhash')
+                            print(f"📋 Scanned {blocks_scanned} blocks, found {len(transactions)} blockchain transactions for {address[:8]}...")
+                    except Exception as block_error:
+                        print(f"⚠️ Could not scan blockchain: {block_error}")
+                if address not in self.address_transactions:
+                    self.address_transactions[address] = []
+                existing_txids = {tx.get('txid') for tx in self.address_transactions[address]}
+                new_transactions = [tx for tx in transactions if tx.get('txid') not in existing_txids]
+                if new_transactions:
+                    self.address_transactions[address].extend(new_transactions)
+                    print(f"📋 Added {len(new_transactions)} new transactions for {address[:8]}...")
+                self.address_transactions[address].sort(key=lambda x: x.get('time', 0), reverse=True)
+                self.address_transactions_updated.emit(address, self.address_transactions[address])
+            except Exception as e:
+                print(f"❌ Error updating transactions for {address}: {e}")
+                self.address_transactions_updated.emit(address, [])
+        threading.Thread(target=worker, daemon=True).start()
     
     def update_all_monitored_addresses(self):
-        """Update all monitored addresses with intelligent throttling for busy nodes and slow scantxoutset."""
-        if not self.monitored_addresses:
-            return
-            
-        # For very busy nodes, reduce frequency dramatically
-        if getattr(self, '_rpc_failure_count', 0) > 10:
-            if not hasattr(self, '_busy_skip_counter'):
-                self._busy_skip_counter = 0
-            self._busy_skip_counter += 1
-            if self._busy_skip_counter < 10:  # Skip 9 out of 10 updates
-                print(f"⏳ Skipping address updates - node too busy ({self._busy_skip_counter}/10)")
-                return
-            self._busy_skip_counter = 0
-            print(f"🔄 Attempting address updates on very busy node...")
-            
-        # Regular busy node handling
-        if self.node_busy:
-            if not hasattr(self, '_skip_address_update_counter'):
-                self._skip_address_update_counter = 0
-            self._skip_address_update_counter += 1
-            if self._skip_address_update_counter < 5:  # Skip more updates when busy
-                print(f"⏳ Skipping address updates while node is busy ({self._skip_address_update_counter}/5)")
-                return
-            self._skip_address_update_counter = 0
-            print(f"🔄 Retrying address updates after busy period")
-            
-        # Process only one address per cycle to reduce load
-        if not hasattr(self, '_address_update_rotation'):
-            self._address_update_rotation = 0
-        
-        address_list = list(self.monitored_addresses)
-        if address_list:
-            # Update only one address per cycle
-            current_address = address_list[self._address_update_rotation % len(address_list)]
-            self._address_update_rotation += 1
-            
-            # Check if this address is known to be slow
-            slow_addresses = getattr(self, '_slow_scan_addresses', {})
-            if current_address in slow_addresses:
-                time_since_last = time.time() - slow_addresses[current_address]
-                # For slow addresses, wait 15 minutes between checks instead of normal frequency
-                if time_since_last < 900:  # 15 minutes
-                    print(f"⏳ Skipping slow address {current_address[:8]}... (waiting {900-time_since_last:.0f}s)")
-                    # Emit throttling status
-                    self.address_performance_status.emit(current_address, f"⏳ Throttled - next check in {int((900-time_since_last)/60)}min")
+        """Update all monitored addresses in a dedicated worker thread."""
+        def worker():
+            try:
+                if not self.monitored_addresses:
                     return
-                else:
-                    print(f"� Updating slow address {current_address[:8]}... (last update was {time_since_last/60:.1f} minutes ago)")
-            
-            print(f"�📍 Updating address {self._address_update_rotation}/{len(address_list)}: {current_address[:8]}...")
-            self.update_address_balance(current_address)
-            
-            # Handle pending transaction updates (from balance changes)
-            if hasattr(self, '_pending_tx_updates') and self._pending_tx_updates:
-                if current_address in self._pending_tx_updates:
-                    print(f"📋 Processing pending transaction update for {current_address[:8]}...")
-                    self.update_address_transactions(current_address)
-                    self._pending_tx_updates.discard(current_address)
-            
-            # Only update transactions occasionally (every 5th cycle for this address) and not for slow addresses
-            elif current_address not in slow_addresses and self._address_update_rotation % (len(address_list) * 5) == 0:
-                print(f"📋 Periodic transaction update for {current_address[:8]}...")
-                self.update_address_transactions(current_address)
+                if getattr(self, '_rpc_failure_count', 0) > 10:
+                    if not hasattr(self, '_busy_skip_counter'):
+                        self._busy_skip_counter = 0
+                    self._busy_skip_counter += 1
+                    if self._busy_skip_counter < 10:
+                        print(f"⏳ Skipping address updates - node too busy ({self._busy_skip_counter}/10)")
+                        return
+                    self._busy_skip_counter = 0
+                    print(f"🔄 Attempting address updates on very busy node...")
+                if self.node_busy:
+                    if not hasattr(self, '_skip_address_update_counter'):
+                        self._skip_address_update_counter = 0
+                    self._skip_address_update_counter += 1
+                    if self._skip_address_update_counter < 5:
+                        print(f"⏳ Skipping address updates while node is busy ({self._skip_address_update_counter}/5)")
+                        return
+                    self._skip_address_update_counter = 0
+                    print(f"🔄 Retrying address updates after busy period")
+                if not hasattr(self, '_address_update_rotation'):
+                    self._address_update_rotation = 0
+                address_list = list(self.monitored_addresses)
+                if address_list:
+                    current_address = address_list[self._address_update_rotation % len(address_list)]
+                    self._address_update_rotation += 1
+                    slow_addresses = getattr(self, '_slow_scan_addresses', {})
+                    if current_address in slow_addresses:
+                        time_since_last = time.time() - slow_addresses[current_address]
+                        if time_since_last < 900:
+                            print(f"⏳ Skipping slow address {current_address[:8]}... (waiting {900-time_since_last:.0f}s)")
+                            self.address_performance_status.emit(current_address, f"⏳ Throttled - next check in {int((900-time_since_last)/60)}min")
+                            return
+                        else:
+                            print(f"� Updating slow address {current_address[:8]}... (last update was {time_since_last/60:.1f} minutes ago)")
+                    print(f"�📍 Updating address {self._address_update_rotation}/{len(address_list)}: {current_address[:8]}...")
+                    self.update_address_balance(current_address)
+                    if hasattr(self, '_pending_tx_updates') and self._pending_tx_updates:
+                        if current_address in self._pending_tx_updates:
+                            print(f"📋 Processing pending transaction update for {current_address[:8]}...")
+                            self.update_address_transactions(current_address)
+                            self._pending_tx_updates.discard(current_address)
+                    elif current_address not in slow_addresses and self._address_update_rotation % (len(address_list) * 5) == 0:
+                        print(f"📋 Periodic transaction update for {current_address[:8]}...")
+                        self.update_address_transactions(current_address)
+            except Exception as e:
+                print(f"❌ Error updating all monitored addresses: {e}")
+        threading.Thread(target=worker, daemon=True).start()
     
     def _adjust_update_frequency(self, success=True):
         """Dynamically adjust update frequency based on node responsiveness with aggressive scaling for busy nodes."""
@@ -1063,60 +986,52 @@ class BitcoinService(QObject):
     # =====================================================================
     
     def estimate_fee(self, target_blocks=6):
-        """Estimate transaction fee for confirmation in target blocks"""
-        if not self.is_connected:
-            print("❌ Not connected to Bitcoin node")
-            return None
-        
-        try:
-            # Ensure wallet is loaded before fee estimation
-            if not self.ensure_wallet_loaded():
-                print("⚠️ Using fallback fee estimation (no wallet loaded)")
-                # Return a reasonable fallback fee rate
-                fallback_fee_data = {
-                    'feerate': 0.00001000,  # 1000 sat/kB
-                    'blocks': target_blocks,
-                    'errors': ['Using fallback fee - no wallet loaded']
-                }
-                self.fee_estimated.emit(fallback_fee_data)
-                return fallback_fee_data
-            
-            # Try smart fee estimation first
-            result = self._safe_rpc_call(lambda: self.rpc_connection.estimatesmartfee(target_blocks))
-            if result and 'feerate' in result:
+        """Estimate transaction fee for confirmation in target blocks in a worker thread."""
+        def worker():
+            if not self.is_connected:
+                print("❌ Not connected to Bitcoin node")
+                return None
+            try:
+                if not self.ensure_wallet_loaded():
+                    print("⚠️ Using fallback fee estimation (no wallet loaded)")
+                    fallback_fee_data = {
+                        'feerate': 0.00001000,
+                        'blocks': target_blocks,
+                        'errors': ['Using fallback fee - no wallet loaded']
+                    }
+                    self.fee_estimated.emit(fallback_fee_data)
+                    return fallback_fee_data
+                result = self._safe_rpc_call(lambda: self.rpc_connection.estimatesmartfee(target_blocks))
+                if result and 'feerate' in result:
+                    fee_data = {
+                        'feerate': result['feerate'],
+                        'blocks': target_blocks,
+                        'errors': result.get('errors', [])
+                    }
+                    self.fee_estimated.emit(fee_data)
+                    return fee_data
+                result = self._safe_rpc_call(lambda: self.rpc_connection.estimatefee(target_blocks))
+                if result and result > 0:
+                    fee_data = {
+                        'feerate': result,
+                        'blocks': target_blocks,
+                        'errors': []
+                    }
+                    self.fee_estimated.emit(fee_data)
+                    return fee_data
                 fee_data = {
-                    'feerate': result['feerate'],
+                    'feerate': 0.00001,
                     'blocks': target_blocks,
-                    'errors': result.get('errors', [])
+                    'errors': ['Fee estimation unavailable, using default']
                 }
                 self.fee_estimated.emit(fee_data)
                 return fee_data
-            
-            # Fallback to older method
-            result = self._safe_rpc_call(lambda: self.rpc_connection.estimatefee(target_blocks))
-            if result and result > 0:
-                fee_data = {
-                    'feerate': result,
-                    'blocks': target_blocks,
-                    'errors': []
-                }
-                self.fee_estimated.emit(fee_data)
-                return fee_data
-            
-            # Default fallback fee
-            fee_data = {
-                'feerate': 0.00001,  # 1 sat/byte
-                'blocks': target_blocks,
-                'errors': ['Fee estimation unavailable, using default']
-            }
-            self.fee_estimated.emit(fee_data)
-            return fee_data
-            
-        except Exception as e:
-            logger.error(f"Error estimating fee: {e}")
-            error_msg = f"Fee estimation failed: {str(e)}"
-            self.transaction_error.emit(error_msg)
-            return None
+            except Exception as e:
+                logger.error(f"Error estimating fee: {e}")
+                error_msg = f"Fee estimation failed: {str(e)}"
+                self.transaction_error.emit(error_msg)
+                return None
+        threading.Thread(target=worker, daemon=True).start()
     
     def get_unspent_outputs(self, address, min_confirmations=1):
         """Get unspent transaction outputs for an address"""
@@ -1166,131 +1081,103 @@ class BitcoinService(QObject):
             return None
     
     def sign_raw_transaction(self, raw_tx, private_keys=None):
-        """Sign a raw transaction"""
-        try:
-            if private_keys:
-                result = self._safe_rpc_call('signrawtransactionwithkey', [raw_tx, private_keys])
-            else:
-                result = self._safe_rpc_call('signrawtransactionwithwallet', [raw_tx])
-            
-            if result and result.get('complete', False):
-                signed_tx = result['hex']
-                self.transaction_signed.emit(signed_tx)
-                return signed_tx
-            else:
-                errors = result.get('errors', []) if result else []
-                error_msg = f"Transaction signing failed: {errors}"
+        """Sign a raw transaction in a worker thread."""
+        def worker():
+            try:
+                if private_keys:
+                    result = self._safe_rpc_call('signrawtransactionwithkey', [raw_tx, private_keys])
+                else:
+                    result = self._safe_rpc_call('signrawtransactionwithwallet', [raw_tx])
+                if result and result.get('complete', False):
+                    signed_tx = result['hex']
+                    self.transaction_signed.emit(signed_tx)
+                    return signed_tx
+                else:
+                    errors = result.get('errors', []) if result else []
+                    error_msg = f"Transaction signing failed: {errors}"
+                    self.transaction_error.emit(error_msg)
+                    return None
+            except Exception as e:
+                logger.error(f"Error signing raw transaction: {e}")
+                error_msg = f"Transaction signing failed: {str(e)}"
                 self.transaction_error.emit(error_msg)
                 return None
-                
-        except Exception as e:
-            logger.error(f"Error signing raw transaction: {e}")
-            error_msg = f"Transaction signing failed: {str(e)}"
-            self.transaction_error.emit(error_msg)
-            return None
+        threading.Thread(target=worker, daemon=True).start()
     
     def broadcast_transaction(self, signed_tx):
-        """Broadcast a signed transaction"""
-        try:
-            result = self._safe_rpc_call('sendrawtransaction', [signed_tx])
-            if result:
-                self.transaction_broadcasted.emit(result)
-                return result
-            return None
-            
-        except Exception as e:
-            logger.error(f"Error broadcasting transaction: {e}")
-            error_msg = f"Transaction broadcast failed: {str(e)}"
-            self.transaction_error.emit(error_msg)
-            return None
+        """Broadcast a signed transaction in a worker thread."""
+        def worker():
+            try:
+                result = self._safe_rpc_call('sendrawtransaction', [signed_tx])
+                if result:
+                    self.transaction_broadcasted.emit(result)
+                    return result
+                return None
+            except Exception as e:
+                logger.error(f"Error broadcasting transaction: {e}")
+                error_msg = f"Transaction broadcast failed: {str(e)}"
+                self.transaction_error.emit(error_msg)
+                return None
+        threading.Thread(target=worker, daemon=True).start()
     
     def create_and_send_transaction(self, to_address, amount, fee_rate=None, from_address=None):
-        """Create, sign, and broadcast a transaction"""
-        try:
-            # Convert amount to Decimal for precise calculation
-            amount = Decimal(str(amount))
-            
-            # Get UTXOs
-            if from_address:
-                utxos = self.get_unspent_outputs(from_address)
-            else:
-                # Use wallet's UTXOs
-                utxos = self._safe_rpc_call('listunspent', [1])
-            
-            if not utxos:
-                error_msg = "No unspent outputs available"
-                self.transaction_error.emit(error_msg)
-                return None
-            
-            # Calculate total available
-            total_available = sum(Decimal(str(utxo['amount'])) for utxo in utxos)
-            
-            # Estimate fee
-            if not fee_rate:
-                fee_info = self.estimate_fee()
-                if fee_info:
-                    fee_rate = fee_info['feerate']
+        """Create, sign, and broadcast a transaction in a dedicated worker thread."""
+        def worker():
+            try:
+                amount_dec = Decimal(str(amount))
+                if from_address:
+                    utxos = self.get_unspent_outputs(from_address)
                 else:
-                    fee_rate = 0.00001  # Default 1 sat/byte
-            
-            # Select UTXOs (simple algorithm - use all for now)
-            inputs = []
-            total_input = Decimal('0')
-            
-            for utxo in utxos:
-                inputs.append({
-                    'txid': utxo['txid'],
-                    'vout': utxo['vout']
-                })
-                total_input += Decimal(str(utxo['amount']))
-                
-                # Estimate transaction size (rough)
-                tx_size = len(inputs) * 148 + 34 + 10  # inputs + output + overhead
-                estimated_fee = Decimal(str(fee_rate)) * Decimal(str(tx_size)) / Decimal('1000')
-                
-                if total_input >= amount + estimated_fee:
-                    break
-            
-            # Final fee calculation
-            tx_size = len(inputs) * 148 + 34 + 10
-            fee = Decimal(str(fee_rate)) * Decimal(str(tx_size)) / Decimal('1000')
-            
-            # Check if we have enough funds
-            if total_input < amount + fee:
-                error_msg = f"Insufficient funds. Available: {total_input}, Required: {amount + fee}"
+                    utxos = self._safe_rpc_call('listunspent', [1])
+                if not utxos:
+                    error_msg = "No unspent outputs available"
+                    self.transaction_error.emit(error_msg)
+                    return None
+                total_available = sum(Decimal(str(utxo['amount'])) for utxo in utxos)
+                if not fee_rate:
+                    fee_info = self.estimate_fee()
+                    if fee_info:
+                        fee_rate = fee_info['feerate']
+                    else:
+                        fee_rate = 0.00001
+                inputs = []
+                total_input = Decimal('0')
+                for utxo in utxos:
+                    inputs.append({
+                        'txid': utxo['txid'],
+                        'vout': utxo['vout']
+                    })
+                    total_input += Decimal(str(utxo['amount']))
+                    tx_size = len(inputs) * 148 + 34 + 10
+                    estimated_fee = Decimal(str(fee_rate)) * Decimal(str(tx_size)) / Decimal('1000')
+                    if total_input >= amount_dec + estimated_fee:
+                        break
+                tx_size = len(inputs) * 148 + 34 + 10
+                fee = Decimal(str(fee_rate)) * Decimal(str(tx_size)) / Decimal('1000')
+                if total_input < amount_dec + fee:
+                    error_msg = f"Insufficient funds. Available: {total_input}, Required: {amount_dec + fee}"
+                    self.transaction_error.emit(error_msg)
+                    return None
+                outputs = {to_address: float(amount_dec)}
+                change = total_input - amount_dec - fee
+                if change > Decimal('0.00000546'):
+                    change_address = self._safe_rpc_call('getrawchangeaddress')
+                    if change_address:
+                        outputs[change_address] = float(change)
+                raw_tx = self.create_raw_transaction(inputs, outputs)
+                if not raw_tx:
+                    return None
+                signed_tx = self.sign_raw_transaction(raw_tx)
+                if not signed_tx:
+                    return None
+                tx_id = self.broadcast_transaction(signed_tx)
+                return tx_id
+            except Exception as e:
+                logger.error(f"Error creating and sending transaction: {e}")
+                error_msg = f"Transaction failed: {str(e)}"
                 self.transaction_error.emit(error_msg)
                 return None
-            
-            # Create outputs
-            outputs = {to_address: float(amount)}
-            
-            # Add change output if needed
-            change = total_input - amount - fee
-            if change > Decimal('0.00000546'):  # Dust threshold
-                # Get a change address
-                change_address = self._safe_rpc_call('getrawchangeaddress')
-                if change_address:
-                    outputs[change_address] = float(change)
-            
-            # Create transaction
-            raw_tx = self.create_raw_transaction(inputs, outputs)
-            if not raw_tx:
-                return None
-            
-            # Sign transaction
-            signed_tx = self.sign_raw_transaction(raw_tx)
-            if not signed_tx:
-                return None
-            
-            # Broadcast transaction
-            tx_id = self.broadcast_transaction(signed_tx)
-            return tx_id
-            
-        except Exception as e:
-            logger.error(f"Error creating and sending transaction: {e}")
-            error_msg = f"Transaction failed: {str(e)}"
-            self.transaction_error.emit(error_msg)
-            return None
+        threading.Thread(target=worker, daemon=True).start()
     
     def _detect_wallet_type(self):
         """Detect if using descriptor wallet or legacy wallet."""
