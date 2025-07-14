@@ -21,11 +21,21 @@ class MeshtasticService(QObject):
         pub.subscribe(self._on_receive, "meshtastic.receive")
 
         time.sleep(2)
-        self.update_nodes.emit(MeshtasticService.iface.nodes)
+        nodes = getattr(MeshtasticService.iface, "nodes", None)
+        if nodes is not None:
+            self.update_nodes.emit(nodes)
+        else:
+            self.update_nodes.emit({})
+            print("⚠️ MeshtasticService.iface.nodes not available")
 
         while True:
             time.sleep(10)
-            self.update_nodes.emit(MeshtasticService.iface.nodes)
+            nodes = getattr(MeshtasticService.iface, "nodes", None)
+            if nodes is not None:
+                self.update_nodes.emit(nodes)
+            else:
+                self.update_nodes.emit({})
+                print("⚠️ MeshtasticService.iface.nodes not available")
 
     def _on_receive(self, packet):
         decoded = packet.get('decoded', {})

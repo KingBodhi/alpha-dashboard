@@ -46,27 +46,41 @@ class BitcoinWalletDescriptorGenerator:
         return True
     
     def get_wallet_info(self):
-        """Get wallet information including descriptor status."""
+        """Get wallet information including descriptor status and balance via listunspent."""
         try:
             self.ensure_wallet_connection()
-            
+
+            # Always create a new AuthServiceProxy for each call
+            rpc_url = self.bitcoin_service.rpc_url
+            rpc_user = self.bitcoin_service.rpc_user
+            rpc_password = self.bitcoin_service.rpc_password
+            wallet_name = self.wallet_name
+            proxy = AuthServiceProxy(f"{rpc_url}/wallet/{wallet_name}", rpc_user, rpc_password)
+
             # Get wallet info
             wallet_info = self.bitcoin_service._safe_rpc_call(
-                lambda: self.bitcoin_service.rpc_connection.getwalletinfo()
+                lambda: proxy.getwalletinfo()
             )
-            
+
+            # Get balance using listunspent
+            utxos = self.bitcoin_service._safe_rpc_call(
+                lambda: proxy.listunspent()
+            )
+            balance = sum(utxo.get('amount', 0) for utxo in utxos) if utxos else 0
+            wallet_info['balance_listunspent'] = balance
+
             if not wallet_info:
                 raise RuntimeError("Could not get wallet information")
-                
+
             self.wallet_info = wallet_info
-            
+
             # Check if it's a descriptor wallet
             is_descriptor = wallet_info.get('descriptors', False)
             if not is_descriptor:
                 logger.warning("Wallet is not a descriptor wallet - some features may be limited")
-            
+
             return wallet_info
-            
+
         except Exception as e:
             logger.error(f"Error getting wallet info: {e}", exc_info=True)
             raise
