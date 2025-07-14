@@ -442,7 +442,9 @@ class BitcoinService(QObject):
                 if callable(rpc_func_or_method):
                     import inspect
                     sig = inspect.signature(rpc_func_or_method)
-                    if len(sig.parameters) == 1:
+                    # Only pass rpc_connection if the function expects it by name
+                    param_names = list(sig.parameters.keys())
+                    if param_names and param_names[0] == 'rpc_connection':
                         result = rpc_func_or_method(rpc_connection)
                     else:
                         result = rpc_func_or_method()
