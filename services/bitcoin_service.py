@@ -419,45 +419,54 @@ class BitcoinService(QObject):
             self._handle_update_error(e)
     
     def _safe_rpc_call(self, rpc_func_or_method, params=None, timeout_override=None, max_retries=3):
-        """Make RPC call with aggressive timeout and retry handling for busy nodes."""
+        """Make RPC call with aggressive timeout and retry handling for busy nodes. Always use a new AuthServiceProxy."""
         timeout = timeout_override or self.base_timeout
-        
+
+        def get_new_rpc_connection():
+            rpc_url = f"http://{self.rpc_user}:{self.rpc_password}@{self.rpc_host}:{self.rpc_port}"
+            if hasattr(self, 'wallet_name') and self.wallet_name:
+                return AuthServiceProxy(f"{rpc_url}/wallet/{self.wallet_name}", timeout=timeout)
+            return AuthServiceProxy(rpc_url, timeout=timeout)
+
         for attempt in range(max_retries):
             try:
                 # Increase timeout for each retry
                 current_timeout = timeout * (attempt + 1)
-                
-                # Update connection timeout if needed
-                if hasattr(self.rpc_connection, '_timeout'):
-                    self.rpc_connection._timeout = current_timeout
-                
+
+                # Always use a new connection for each call
+                rpc_connection = get_new_rpc_connection()
+
                 start_time = time.time()
-                
+
                 # Handle both callable functions and method names with parameters
                 if callable(rpc_func_or_method):
-                    result = rpc_func_or_method()
+                    # If lambda, pass the new connection as argument if needed
+                    try:
+                        result = rpc_func_or_method(rpc_connection)
+                    except TypeError:
+                        # If lambda doesn't accept argument, fallback to calling directly
+                        result = rpc_func_or_method()
                 else:
-                    # Method name with parameters
-                    method = getattr(self.rpc_connection, rpc_func_or_method)
+                    method = getattr(rpc_connection, rpc_func_or_method)
                     if params:
                         result = method(*params)
                     else:
                         result = method()
-                
+
                 call_time = time.time() - start_time
-                
+
                 # Track slow calls and adjust timeouts
                 if call_time > self.slow_call_threshold:
                     self.base_timeout = min(120, self.base_timeout * 1.1)
                     if attempt == 0:  # Only log on first attempt
                         print(f"⚠️ Slow RPC call: {call_time:.1f}s (adjusting timeout to {self.base_timeout:.1f}s)")
-                
+
                 # Success - reset any failure counters
                 if hasattr(self, '_rpc_failure_count'):
                     self._rpc_failure_count = 0
-                
+
                 return result
-                
+
             except JSONRPCException as e:
                 error_msg = str(e)
                 
