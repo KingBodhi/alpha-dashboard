@@ -679,7 +679,6 @@ class BitcoinService(QObject):
         """Update balance for a specific address in a dedicated worker thread."""
         def worker():
             try:
-                # Original logic moved here
                 if hasattr(self, '_no_node_mode') and self._no_node_mode:
                     if not hasattr(self, '_no_node_message_shown'):
                         print(f"📍 No-node mode: Cannot check balance for {address[:8]}... - Bitcoin Core required")
@@ -703,45 +702,11 @@ class BitcoinService(QObject):
                     print(f"⏳ Skipping balance update for {address[:8]}... - node too busy")
                     return
 
-                balance_btc = Decimal('0')
-                utxo_count = 0
-
-                try:
-                    print(f"📊 Checking balance for {address[:8]}... (threaded)")
-                    start_time = time.time()
-                    scan_result = self._safe_rpc_call(
-                        lambda: self.rpc_connection.scantxoutset("start", [f"addr({address})"]),
-                        timeout_override=120,
-                        max_retries=1
-                    )
-                    elapsed_time = time.time() - start_time
-                    if scan_result:
-                        balance_btc = Decimal(str(scan_result.get('total_amount', 0)))
-                        utxo_count = len(scan_result.get('unspents', []))
-                        if elapsed_time > 20:
-                            if not hasattr(self, '_slow_scan_addresses'):
-                                self._slow_scan_addresses = {}
-                            self._slow_scan_addresses[address] = time.time()
-                            print(f"⚠️ SLOW scantxoutset: {elapsed_time:.1f}s - will reduce frequency for this address")
-                            self.address_performance_status.emit(address, f"⏱️ Slow node - updates every 15min")
-                        print(f"📊 Balance check complete: {balance_btc:.8f} BTC ({utxo_count} UTXOs) in {elapsed_time:.1f}s")
-                    else:
-                        print(f"⏳ Balance check timed out for {address[:8]}... after {elapsed_time:.1f}s")
-                        if not hasattr(self, '_slow_scan_addresses'):
-                            self._slow_scan_addresses = {}
-                        self._slow_scan_addresses[address] = time.time()
-                        self.address_performance_status.emit(address, f"⏱️ Slow node - updates every 15min")
-                        return
-                except Exception as e:
-                    error_str = str(e).lower()
-                    if any(phrase in error_str for phrase in ['busy', 'request-sent', 'timeout', 'loading block index', 'verifying']):
-                        print(f"⏳ Balance check failed - node busy, will retry later for {address[:8]}...")
-                        return
-                    else:
-                        print(f"⚠️ Balance check error for {address[:8]}...: {e}")
-                        balance_btc = Decimal('0')
+                # scanTxOutSet functionality removed
 
                 old_balance = self.address_balances.get(address, Decimal('0'))
+                balance_btc = Decimal('0')
+                utxo_count = 0
                 self.address_balances[address] = balance_btc
                 btc_price_usd = self.get_btc_price_estimate()
                 balance_usd = float(balance_btc) * btc_price_usd
@@ -1047,31 +1012,13 @@ class BitcoinService(QObject):
     def get_unspent_outputs(self, address, min_confirmations=1):
         """Get unspent transaction outputs for an address"""
         try:
-            # For descriptor wallets, use scantxoutset
-            if self.is_descriptor_wallet:
-                result = self._safe_rpc_call('scantxoutset', ['start', [f"addr({address})"]])
-                if result and 'unspents' in result:
-                    utxos = []
-                    for utxo in result['unspents']:
-                        if utxo.get('height', 0) > 0:  # Confirmed transactions
-                            confirmations = self.last_blockchain_info.get('blocks', 0) - utxo['height'] + 1
-                            if confirmations >= min_confirmations:
-                                utxos.append({
-                                    'txid': utxo['txid'],
-                                    'vout': utxo['vout'],
-                                    'amount': utxo['amount'],
-                                    'scriptPubKey': utxo['scriptPubKey'],
-                                    'confirmations': confirmations
-                                })
-                    return utxos
-            else:
-                # For legacy wallets, use listunspent
-                result = self._safe_rpc_call('listunspent', [min_confirmations, 9999999, [address]])
-                if result:
-                    return result
-            
+            # For legacy wallets, use listunspent
+            result = self._safe_rpc_call('listunspent', [min_confirmations, 9999999, [address]])
+            if result:
+                return result
+
             return []
-            
+
         except Exception as e:
             logger.error(f"Error getting unspent outputs for {address}: {e}")
             return []
