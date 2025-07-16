@@ -559,6 +559,7 @@ Note: This is a preview only. No transaction has been created yet."""
 
         # All wallet checks and transaction creation are now threaded in BitcoinService
         fee_rate = self.get_selected_fee_rate()
+        print(f"[UI] Selected fee_rate: {fee_rate} sats/vB (raw, before conversion)")
         msg = QMessageBox()
         msg.setIcon(QMessageBox.Icon.Question)
         msg.setWindowTitle("Confirm Transaction")
@@ -569,7 +570,8 @@ Note: This is a preview only. No transaction has been created yet."""
         if msg.exec() == QMessageBox.StandardButton.Yes:
             self.send_button.setEnabled(False)
             self.send_button.setText("Sending...")
-            fee_rate_btc = fee_rate / 100000000  # satoshis to BTC
+            fee_rate_btc = fee_rate / 100000  # sats/vB to BTC/kvB
+            print(f"[UI] Converted fee_rate for backend: {fee_rate_btc} BTC/kvB (correct units)")
 
             # Call the service method (threaded)
             self.bitcoin_service.create_and_send_transaction(

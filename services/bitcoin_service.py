@@ -1080,6 +1080,7 @@ class BitcoinService(QObject):
     
     def create_and_send_transaction(self, to_address, amount, fee_rate=None, from_address=None):
         """Create, sign, and broadcast a transaction in a dedicated worker thread."""
+        print(f"[Backend] Received fee_rate: {fee_rate} (units: BTC/vB, should be BTC/kvB)")
         def worker():
             try:
                 amount_dec = Decimal(str(amount))
