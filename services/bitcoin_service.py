@@ -1066,6 +1066,9 @@ class BitcoinService(QObject):
         """Broadcast a signed transaction in a worker thread."""
         def worker():
             try:
+                # Decode the signed transaction before broadcasting for detailed debug logging
+                decoded_tx = self._safe_rpc_call('decoderawtransaction', [signed_tx])
+                print(f"DEBUG: Decoded transaction for broadcast: {decoded_tx}")
                 result = self._safe_rpc_call('sendrawtransaction', [signed_tx])
                 if result:
                     self.transaction_broadcasted.emit(result)
@@ -1217,6 +1220,7 @@ class BitcoinService(QObject):
                 print("Broadcasting transaction...")
                 broadcast_tx_id = None
                 try:
+                    print(f"DEBUG: Broadcasting signed transaction hex: {signed_tx}")
                     broadcast_tx_id = self._safe_rpc_call('sendrawtransaction', [signed_tx])
                     if broadcast_tx_id:
                         # The TXID from broadcast should match the one we calculated earlier
