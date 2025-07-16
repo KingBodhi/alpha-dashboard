@@ -275,13 +275,15 @@ class TransactionPage(QWidget):
         fee_layout.addWidget(self.custom_fee_input)
         
         self.fee_combo.currentTextChanged.connect(self.on_fee_selection_changed)
-        
-        send_form.addRow("Fee:", fee_layout)
-        
-        # Description (optional)
+        self.custom_fee_input.valueChanged.connect(self.update_transaction_preview)
+        self.recipient_input.textChanged.connect(self.update_transaction_preview)
+        self.amount_input.valueChanged.connect(self.update_transaction_preview)
         self.description_input = QLineEdit()
         self.description_input.setPlaceholderText("Optional description for your records")
         send_form.addRow("Description:", self.description_input)
+        self.description_input.textChanged.connect(self.update_transaction_preview)
+        
+        send_form.addRow("Fee:", fee_layout)
         
         # Advanced options
         advanced_group = QGroupBox("Advanced Options")
@@ -291,6 +293,7 @@ class TransactionPage(QWidget):
         self.rbf_checkbox = QCheckBox("Replace-by-Fee (RBF)")
         self.rbf_checkbox.setChecked(True)
         advanced_layout.addRow("Options:", self.rbf_checkbox)
+        self.rbf_checkbox.stateChanged.connect(self.update_transaction_preview)
         
         form_layout.addWidget(send_group)
         form_layout.addWidget(advanced_group)
@@ -502,6 +505,14 @@ class TransactionPage(QWidget):
         recipient = self.recipient_input.text().strip()
         amount = self.amount_input.value()
         
+        fee_mode = self.fee_combo.currentText()
+        fee_rate = self.get_selected_fee_rate()  # sats/vB
+        # Estimate transaction size (vbytes). Typical single-input, single-output tx is ~200 vbytes.
+        estimated_size = 200
+        fee_btc = (fee_rate * estimated_size) / 1e8  # Convert sats to BTC
+
+        print(f"[PREVIEW] Fee mode: {fee_mode}, Fee rate: {fee_rate} sats/vB, Estimated size: {estimated_size} vB, Calculated fee: {fee_btc:.8f} BTC, Amount: {amount} BTC")
+        
         if not recipient or amount <= 0:
             QMessageBox.warning(self, "Input Error", "Please enter a valid recipient address and amount.")
             return
@@ -509,15 +520,15 @@ class TransactionPage(QWidget):
         # Create preview text
         preview = f"""Transaction Preview:
         
-To: {recipient}
-Amount: {amount:.8f} BTC
-Fee: {self.get_selected_fee():.8f} BTC
-Total: {amount + self.get_selected_fee():.8f} BTC
+        To: {recipient}
+        Amount: {amount:.8f} BTC
+        Fee: {fee_btc:.8f} BTC
+        Total: {amount + fee_btc:.8f} BTC
 
-Description: {self.description_input.text() or 'None'}
-Replace-by-Fee: {'Yes' if self.rbf_checkbox.isChecked() else 'No'}
+        Description: {self.description_input.text() or 'None'}
+        Replace-by-Fee: {'Yes' if self.rbf_checkbox.isChecked() else 'No'}
 
-Note: This is a preview only. No transaction has been created yet."""
+        Note: This is a preview only. No transaction has been created yet."""
         
         self.preview_text.setPlainText(preview)
         self.send_button.setEnabled(True)
@@ -845,8 +856,33 @@ Note: This is a preview only. No transaction has been created yet."""
     
     def update_transaction_preview(self):
         """Update the transaction preview when inputs change."""
-        # This would be connected to input field changes
-        pass
+        recipient = self.recipient_input.text().strip()
+        amount = self.amount_input.value()
+        fee_mode = self.fee_combo.currentText()
+        fee_rate = self.get_selected_fee_rate()  # sats/vB
+        estimated_size = 200
+        fee_btc = (fee_rate * estimated_size) / 1e8  # Convert sats to BTC
+
+        print(f"[PREVIEW][AUTO] Fee mode: {fee_mode}, Fee rate: {fee_rate} sats/vB, Estimated size: {estimated_size} vB, Calculated fee: {fee_btc:.8f} BTC, Amount: {amount} BTC")
+
+        if not recipient or amount <= 0:
+            self.preview_text.setPlainText("Enter transaction details to see preview...")
+            self.send_button.setEnabled(False)
+            return
+
+        preview = f"""Transaction Preview:
+
+        To: {recipient}
+        Amount: {amount:.8f} BTC
+        Fee: {fee_btc:.8f} BTC
+        Total: {amount + fee_btc:.8f} BTC
+
+        Description: {self.description_input.text() or 'None'}
+        Replace-by-Fee: {'Yes' if self.rbf_checkbox.isChecked() else 'No'}
+
+        Note: This is a preview only. No transaction has been created yet."""
+        self.preview_text.setPlainText(preview)
+        self.send_button.setEnabled(True)
     
     def decode_transaction(self):
         """Decode a raw transaction."""
