@@ -267,8 +267,10 @@ class TransactionPage(QWidget):
         fee_layout.addWidget(self.fee_combo)
         
         self.custom_fee_input = QDoubleSpinBox()
-        self.custom_fee_input.setDecimals(8)
-        self.custom_fee_input.setSuffix(" BTC")
+        self.custom_fee_input.setDecimals(0)
+        self.custom_fee_input.setMaximum(1000)
+        self.custom_fee_input.setSuffix(" sats/vB")
+        self.custom_fee_input.setToolTip("Custom fee rate in satoshis per virtual byte (sats/vB)")
         self.custom_fee_input.setVisible(False)
         fee_layout.addWidget(self.custom_fee_input)
         

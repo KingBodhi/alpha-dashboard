@@ -1083,6 +1083,11 @@ class BitcoinService(QObject):
         def worker():
             try:
                 amount_dec = Decimal(str(amount))
+                # Ensure fee_rate is always initialized
+                if fee_rate is None:
+                    local_fee_rate = None
+                else:
+                    local_fee_rate = fee_rate
                 if from_address:
                     utxos = self.get_unspent_outputs(from_address)
                 else:
@@ -1092,12 +1097,12 @@ class BitcoinService(QObject):
                     self.transaction_error.emit(error_msg)
                     return None
                 total_available = sum(Decimal(str(utxo['amount'])) for utxo in utxos)
-                if not fee_rate:
+                if not local_fee_rate:
                     fee_info = self.estimate_fee()
-                    if fee_info:
-                        fee_rate = fee_info['feerate']
+                    if fee_info and 'feerate' in fee_info:
+                        local_fee_rate = fee_info['feerate']
                     else:
-                        fee_rate = 0.00001
+                        local_fee_rate = 0.00001
                 inputs = []
                 total_input = Decimal('0')
                 for utxo in utxos:
@@ -1107,11 +1112,11 @@ class BitcoinService(QObject):
                     })
                     total_input += Decimal(str(utxo['amount']))
                     tx_size = len(inputs) * 148 + 34 + 10
-                    estimated_fee = Decimal(str(fee_rate)) * Decimal(str(tx_size)) / Decimal('1000')
+                    estimated_fee = Decimal(str(local_fee_rate)) * Decimal(str(tx_size)) / Decimal('1000')
                     if total_input >= amount_dec + estimated_fee:
                         break
                 tx_size = len(inputs) * 148 + 34 + 10
-                fee = Decimal(str(fee_rate)) * Decimal(str(tx_size)) / Decimal('1000')
+                fee = Decimal(str(local_fee_rate)) * Decimal(str(tx_size)) / Decimal('1000')
                 if total_input < amount_dec + fee:
                     error_msg = f"Insufficient funds. Available: {total_input}, Required: {amount_dec + fee}"
                     self.transaction_error.emit(error_msg)
