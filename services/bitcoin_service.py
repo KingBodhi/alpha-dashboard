@@ -702,11 +702,11 @@ class BitcoinService(QObject):
                     print(f"⏳ Skipping balance update for {address[:8]}... - node too busy")
                     return
 
-                # scanTxOutSet functionality removed
-
+                # Fetch UTXOs for the address using listunspent
+                utxos = self.get_unspent_outputs(address)
+                balance_btc = sum(Decimal(str(utxo.get('amount', 0))) for utxo in utxos)
+                utxo_count = len(utxos)
                 old_balance = self.address_balances.get(address, Decimal('0'))
-                balance_btc = Decimal('0')
-                utxo_count = 0
                 self.address_balances[address] = balance_btc
                 btc_price_usd = self.get_btc_price_estimate()
                 balance_usd = float(balance_btc) * btc_price_usd
