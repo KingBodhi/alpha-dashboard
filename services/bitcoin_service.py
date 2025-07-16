@@ -1153,10 +1153,23 @@ class BitcoinService(QObject):
                 # 5. Create outputs (payment and change)
                 outputs = {to_address: float(amount_dec)}
                 change = total_input - amount_dec - fee
-                if change > Decimal('0.00000546'):  # Dust threshold
+
+                # Define a dust threshold. 546 satoshis is a common value for P2PKH,
+                # but using a slightly higher value is safer for different output types.
+                DUST_THRESHOLD = Decimal('0.00000546')  # 546 satoshis
+
+                if change > DUST_THRESHOLD:
                     change_address = self._safe_rpc_call('getrawchangeaddress')
                     if change_address:
                         outputs[change_address] = float(change)
+                    else:
+                        # If we can't get a change address, the change will be added to the fee.
+                        print("⚠️ Could not get change address. Change will be added to fee.")
+                else:
+                    # Change is below the dust threshold, so it will be added to the transaction fee
+                    # by not creating a change output.
+                    if change > 0:
+                        print(f"ℹ️ Change amount ({change:.8f} BTC) is below dust threshold and will be added to the fee.")
 
                 # 6. Create raw transaction (Synchronous)
                 print("Creating raw transaction...")
@@ -1164,7 +1177,20 @@ class BitcoinService(QObject):
                 if not raw_tx:
                     # create_raw_transaction already emits an error
                     return None
-                print(f"✅ Transaction created: {raw_tx}")
+
+                # Immediately decode to get the TXID for better logging
+                txid = None
+                try:
+                    decoded_tx = self._safe_rpc_call('decoderawtransaction', [raw_tx])
+                    if decoded_tx and 'txid' in decoded_tx:
+                        txid = decoded_tx['txid']
+                        print(f"✅ Transaction created with TXID: {txid}")
+                    else:
+                        # Fallback if decoding fails
+                        print(f"✅ Transaction created (raw): {raw_tx[:40]}...")
+                except Exception as e:
+                    logger.warning(f"Could not decode raw transaction to get TXID, will log raw tx instead: {e}")
+                    print(f"✅ Transaction created (raw): {raw_tx[:40]}...")
 
                 # 7. Sign raw transaction (Synchronous)
                 print("Signing transaction...")
@@ -1174,7 +1200,8 @@ class BitcoinService(QObject):
                     if sign_result and sign_result.get('complete'):
                         signed_tx = sign_result['hex']
                         self.transaction_signed.emit(signed_tx)
-                        print(f"Transaction signed: {signed_tx[:30]}...")
+                        # Removed confusing truncated signed tx log, replaced with simple confirmation.
+                        print("✅ Transaction signed successfully.")
                     else:
                         errors = sign_result.get('errors', []) if sign_result else "Unknown signing error"
                         raise Exception(f"Signing failed: {errors}")
@@ -1188,13 +1215,16 @@ class BitcoinService(QObject):
 
                 # 8. Broadcast transaction (Synchronous)
                 print("Broadcasting transaction...")
-                tx_id = None
+                broadcast_tx_id = None
                 try:
-                    tx_id = self._safe_rpc_call('sendrawtransaction', [signed_tx])
-                    if tx_id:
-                        self.transaction_broadcasted.emit(tx_id)
-                        print(f"Transaction broadcasted with TXID: {tx_id}")
-                        return tx_id
+                    broadcast_tx_id = self._safe_rpc_call('sendrawtransaction', [signed_tx])
+                    if broadcast_tx_id:
+                        # The TXID from broadcast should match the one we calculated earlier
+                        if txid and broadcast_tx_id != txid:
+                            logger.warning(f"Broadcast TXID {broadcast_tx_id} does not match calculated TXID {txid}")
+                        self.transaction_broadcasted.emit(broadcast_tx_id)
+                        print(f"✅ Transaction broadcasted with TXID: {broadcast_tx_id}")
+                        return broadcast_tx_id
                     else:
                         raise Exception("Broadcast failed, returned no TXID.")
                 except Exception as e:
