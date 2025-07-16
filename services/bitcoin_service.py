@@ -1079,68 +1079,134 @@ class BitcoinService(QObject):
         threading.Thread(target=worker, daemon=True).start()
     
     def create_and_send_transaction(self, to_address, amount, fee_rate=None, from_address=None):
-        """Create, sign, and broadcast a transaction in a dedicated worker thread."""
-        print(f"[Backend] Received fee_rate: {fee_rate} (units: BTC/vB, should be BTC/kvB)")
+        """Create, sign, and broadcast a transaction sequentially in a dedicated worker thread."""
+        print(f"[Backend] Received fee_rate: {fee_rate} (units: BTC/kvB expected by backend)")
+
         def worker():
             try:
+                # 1. Set up amount and fee rate
                 amount_dec = Decimal(str(amount))
-                # Ensure fee_rate is always initialized
-                if fee_rate is None:
-                    local_fee_rate = None
-                else:
-                    local_fee_rate = fee_rate
+                local_fee_rate = fee_rate
+
+                # 2. Estimate fee if not provided (Synchronous)
+                if not local_fee_rate:
+                    print("Estimating fee...")
+                    try:
+                        target_blocks = 6
+                        if not self.is_connected:
+                            raise Exception("Not connected to Bitcoin node")
+                        
+                        if not self.ensure_wallet_loaded():
+                            print("⚠️ Using fallback fee estimation (no wallet loaded)")
+                            fee_info = {'feerate': 0.00001000}
+                        else:
+                            result = self._safe_rpc_call(lambda: self.rpc_connection.estimatesmartfee(target_blocks))
+                            if result and 'feerate' in result:
+                                fee_info = result
+                            else:
+                                result = self._safe_rpc_call(lambda: self.rpc_connection.estimatefee(target_blocks))
+                                if result and result > 0:
+                                    fee_info = {'feerate': result}
+                                else:
+                                    fee_info = {'feerate': 0.00001}
+                        
+                        local_fee_rate = fee_info.get('feerate')
+                        if not local_fee_rate:
+                            raise Exception("Fee estimation failed.")
+                        print(f"Estimated fee rate: {local_fee_rate}")
+
+                    except Exception as e:
+                        logger.error(f"Error estimating fee: {e}")
+                        self.transaction_error.emit(f"Fee estimation failed: {e}")
+                        return None
+
+                # 3. Select UTXOs and build inputs
                 if from_address:
                     utxos = self.get_unspent_outputs(from_address)
                 else:
                     utxos = self._safe_rpc_call('listunspent', [1])
+
                 if not utxos:
-                    error_msg = "No unspent outputs available"
-                    self.transaction_error.emit(error_msg)
+                    self.transaction_error.emit("No unspent outputs available")
                     return None
-                total_available = sum(Decimal(str(utxo['amount'])) for utxo in utxos)
-                if not local_fee_rate:
-                    fee_info = self.estimate_fee()
-                    if fee_info and 'feerate' in fee_info:
-                        local_fee_rate = fee_info['feerate']
-                    else:
-                        local_fee_rate = 0.00001
+
                 inputs = []
                 total_input = Decimal('0')
                 for utxo in utxos:
-                    inputs.append({
-                        'txid': utxo['txid'],
-                        'vout': utxo['vout']
-                    })
+                    inputs.append({'txid': utxo['txid'], 'vout': utxo['vout']})
                     total_input += Decimal(str(utxo['amount']))
-                    tx_size = len(inputs) * 148 + 34 + 10
-                    estimated_fee = Decimal(str(local_fee_rate)) * Decimal(str(tx_size)) / Decimal('1000')
+                    # Rough estimation for early exit
+                    tx_size_est = len(inputs) * 148 + 34 + 10
+                    estimated_fee = Decimal(str(local_fee_rate)) * Decimal(str(tx_size_est)) / Decimal('1000')
                     if total_input >= amount_dec + estimated_fee:
                         break
-                tx_size = len(inputs) * 148 + 34 + 10
+                
+                # 4. Calculate final fee and check for sufficient funds
+                tx_size = len(inputs) * 148 + 2 * 34 + 10 # 2 outputs: payment + change
                 fee = Decimal(str(local_fee_rate)) * Decimal(str(tx_size)) / Decimal('1000')
+
                 if total_input < amount_dec + fee:
-                    error_msg = f"Insufficient funds. Available: {total_input}, Required: {amount_dec + fee}"
+                    error_msg = f"Insufficient funds. Available: {total_input:.8f}, Required: {amount_dec + fee:.8f}"
                     self.transaction_error.emit(error_msg)
                     return None
+
+                # 5. Create outputs (payment and change)
                 outputs = {to_address: float(amount_dec)}
                 change = total_input - amount_dec - fee
-                if change > Decimal('0.00000546'):
+                if change > Decimal('0.00000546'):  # Dust threshold
                     change_address = self._safe_rpc_call('getrawchangeaddress')
                     if change_address:
                         outputs[change_address] = float(change)
+
+                # 6. Create raw transaction (Synchronous)
+                print("Creating raw transaction...")
                 raw_tx = self.create_raw_transaction(inputs, outputs)
                 if not raw_tx:
+                    # create_raw_transaction already emits an error
                     return None
-                signed_tx = self.sign_raw_transaction(raw_tx)
+                print(f"✅ Transaction created: {raw_tx}")
+
+                # 7. Sign raw transaction (Synchronous)
+                print("Signing transaction...")
+                signed_tx = None
+                try:
+                    sign_result = self._safe_rpc_call('signrawtransactionwithwallet', [raw_tx])
+                    if sign_result and sign_result.get('complete'):
+                        signed_tx = sign_result['hex']
+                        self.transaction_signed.emit(signed_tx)
+                        print(f"Transaction signed: {signed_tx[:30]}...")
+                    else:
+                        errors = sign_result.get('errors', []) if sign_result else "Unknown signing error"
+                        raise Exception(f"Signing failed: {errors}")
+                except Exception as e:
+                    logger.error(f"Error signing raw transaction: {e}")
+                    self.transaction_error.emit(f"Transaction signing failed: {e}")
+                    return None
+
                 if not signed_tx:
                     return None
-                tx_id = self.broadcast_transaction(signed_tx)
-                return tx_id
+
+                # 8. Broadcast transaction (Synchronous)
+                print("Broadcasting transaction...")
+                tx_id = None
+                try:
+                    tx_id = self._safe_rpc_call('sendrawtransaction', [signed_tx])
+                    if tx_id:
+                        self.transaction_broadcasted.emit(tx_id)
+                        print(f"Transaction broadcasted with TXID: {tx_id}")
+                        return tx_id
+                    else:
+                        raise Exception("Broadcast failed, returned no TXID.")
+                except Exception as e:
+                    logger.error(f"Error broadcasting transaction: {e}")
+                    self.transaction_error.emit(f"Transaction broadcast failed: {e}")
+                    return None
+
             except Exception as e:
-                logger.error(f"Error creating and sending transaction: {e}")
-                error_msg = f"Transaction failed: {str(e)}"
-                self.transaction_error.emit(error_msg)
+                logger.exception(f"Error creating and sending transaction: {e}")
+                self.transaction_error.emit(f"Transaction failed: {str(e)}")
                 return None
+
         threading.Thread(target=worker, daemon=True).start()
     
     def _detect_wallet_type(self):
