@@ -330,7 +330,6 @@ class TransactionPage(QWidget):
         self.mesh_send_button.setStyleSheet("QPushButton { background-color: #1976D2; color: white; font-weight: bold; }")
         self.mesh_send_button.clicked.connect(self.send_psbt_via_mesh)
         self.mesh_send_button.setVisible(False)  # Will be shown/hidden based on node connection
-        button_layout.addWidget(self.mesh_send_button)
         preview_layout = QVBoxLayout()
         preview_group.setLayout(preview_layout)
         
@@ -357,13 +356,14 @@ class TransactionPage(QWidget):
         self.clear_button = QPushButton("Clear Form")
         self.clear_button.clicked.connect(self.clear_send_form)
         button_layout.addWidget(self.clear_button)
-        
+        button_layout.addWidget(self.mesh_send_button)
+                
         form_layout.addLayout(button_layout)
         form_layout.addStretch()
-        
+                
         scroll_area.setWidget(form_widget)
         layout.addWidget(scroll_area)
-        
+                
         return widget
     
     def create_receive_tab(self):
