@@ -684,9 +684,38 @@ class TransactionPage(QWidget):
     
     def generate_payment_qr(self):
         """Generate a payment QR code."""
-        # This would integrate with the profile page to get the actual address
-        # For now, show a placeholder
-        QMessageBox.information(self, "QR Code", "Payment QR code generation will be implemented when connected to the blockchain.")
+        import qrcode
+        from PyQt6.QtGui import QPixmap, QImage
+        import io
+
+        address = self.receive_address_label.text().strip()
+        if not address or address == "Loading address...":
+            QMessageBox.warning(self, "Error", "No Bitcoin address available.")
+            return
+
+        # Build Bitcoin URI
+        uri = f"bitcoin:{address}"
+        params = []
+        amount = self.request_amount_input.value()
+        if amount > 0:
+            params.append(f"amount={amount:.8f}")
+        label = self.request_label_input.text().strip()
+        if label:
+            params.append(f"label={label}")
+        message = self.request_message_input.text().strip()
+        if message:
+            params.append(f"message={message}")
+        if params:
+            uri += "?" + "&".join(params)
+
+        # Generate QR code
+        qr_img = qrcode.make(uri)
+        buffer = io.BytesIO()
+        qr_img.save(buffer, "PNG")
+        qt_image = QImage.fromData(buffer.getvalue())
+        pixmap = QPixmap.fromImage(qt_image)
+        self.qr_display.setPixmap(pixmap.scaled(220, 220, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+        self.qr_display.setText("")  # Remove placeholder text
     
     def load_transaction_history(self):
         """Load transaction history into the list."""
