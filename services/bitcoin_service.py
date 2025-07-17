@@ -761,7 +761,7 @@ class BitcoinService(QObject):
                     wallet_txs = self._safe_rpc_call(lambda: self.rpc_connection.listtransactions("*", 1000))
                     if wallet_txs:
                         for tx in wallet_txs:
-                            if tx.get('address') == address:
+                            if tx.get('address') == address or tx.get('category') == 'send':
                                 formatted_tx = {
                                     'txid': tx.get('txid', ''),
                                     'amount': abs(float(tx.get('amount', 0))),
@@ -1154,12 +1154,17 @@ class BitcoinService(QObject):
                     return None
 
                 # 5. Create outputs (payment and change)
+                # Define a dust threshold. 546 satoshis is a common value for P2PKH.
+                DUST_THRESHOLD = Decimal('0.00000546')
+
+                # Prevent sending dust amounts.
+                if amount_dec <= DUST_THRESHOLD:
+                    self.transaction_error.emit(f"Amount is below dust threshold ({DUST_THRESHOLD} BTC)")
+                    return
+
+                # 5. Create outputs (payment and change)
                 outputs = {to_address: float(amount_dec)}
                 change = total_input - amount_dec - fee
-
-                # Define a dust threshold. 546 satoshis is a common value for P2PKH,
-                # but using a slightly higher value is safer for different output types.
-                DUST_THRESHOLD = Decimal('0.00000546')  # 546 satoshis
 
                 if change > DUST_THRESHOLD:
                     change_address = self._safe_rpc_call('getrawchangeaddress')
