@@ -1,10 +1,13 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
-    QGroupBox, QProgressBar, QListWidget, QListWidgetItem
+    QGroupBox, QProgressBar, QListWidget, QListWidgetItem,
+    QDialog, QLineEdit
 )
 from PyQt6.QtCore import Qt, pyqtSlot
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QPixmap, QImage
 from decimal import Decimal
+import qrcode
+import io
 
 
 class BitcoinWalletWidget(QWidget):
@@ -75,6 +78,10 @@ class BitcoinWalletWidget(QWidget):
         self.refresh_button = QPushButton("Refresh")
         self.refresh_button.clicked.connect(self.request_balance_update)
         sync_layout.addWidget(self.refresh_button)
+
+        self.receive_button = QPushButton("Receive")
+        self.receive_button.clicked.connect(self.show_receive_dialog)
+        sync_layout.addWidget(self.receive_button)
         
         wallet_layout.addLayout(sync_layout)
         
@@ -264,3 +271,46 @@ class BitcoinWalletWidget(QWidget):
         else:
             self.perf_status_label.setText("")
             self.perf_status_label.hide()
+
+    def show_receive_dialog(self):
+        """Show a dialog with the address and QR code to receive funds."""
+        if not self.address:
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Receive Bitcoin")
+        dialog.setMinimumWidth(400)
+
+        layout = QVBoxLayout()
+        dialog.setLayout(layout)
+
+        # Address
+        layout.addWidget(QLabel("Your Bitcoin Address:"))
+        address_edit = QLineEdit(self.address)
+        address_edit.setReadOnly(True)
+        address_edit.setStyleSheet("font-family: monospace;")
+        layout.addWidget(address_edit)
+
+        # QR Code
+        qr_label = QLabel()
+        qr_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        # Generate QR code
+        payment_uri = f"bitcoin:{self.address}"
+        qr_img = qrcode.make(payment_uri)
+        
+        # Convert to QPixmap
+        buffer = io.BytesIO()
+        qr_img.save(buffer, "PNG")
+        qt_image = QImage.fromData(buffer.getvalue())
+        pixmap = QPixmap.fromImage(qt_image)
+        qr_label.setPixmap(pixmap.scaled(250, 250, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+        
+        layout.addWidget(qr_label)
+
+        # Close button
+        close_button = QPushButton("Close")
+        close_button.clicked.connect(dialog.accept)
+        layout.addWidget(close_button)
+
+        dialog.exec()
