@@ -52,6 +52,7 @@ class MainWindow(QMainWindow):
 
         # Meshtastic Service
         self.service = MeshtasticService()
+        self.service.new_message.connect(self.handle_mesh_psbt_message)
         self.service.new_message.connect(self.chat_page.append_message)
         self.service.update_nodes.connect(self.update_nodes_all)
 
@@ -274,3 +275,43 @@ class MainWindow(QMainWindow):
         self.home_page.update_nodes(nodes)
         self.map_page.update_nodes(nodes)
         self.nodes_page.update_nodes(nodes)
+    def handle_mesh_psbt_message(self, message):
+        """
+        Handle incoming messages from the mesh network.
+        If the message starts with the custom PSBT prefix and the node is connected, broadcast it.
+        """
+        import base64
+        from PyQt6.QtWidgets import QMessageBox
+
+        custom_prefix = "APN_PSBT:"
+        try:
+            if not isinstance(message, str):
+                return
+            if message.strip().startswith(custom_prefix):
+                psbt_base64 = message.strip()[len(custom_prefix):]
+                if self.bitcoin_service.is_connected:
+                    try:
+                        import base64
+                        from PyQt6.QtWidgets import QMessageBox
+                        try:
+                            from bitcointx.core.psbt import PartiallySignedTransaction
+                        except ImportError:
+                            QMessageBox.warning(self, "Missing Dependency", "python-bitcointx is required to finalize PSBTs.")
+                            return
+
+                        psbt_bytes = base64.b64decode(psbt_base64)
+                        psbt = PartiallySignedTransaction.deserialize(psbt_bytes)
+                        # Finalize the PSBT (assumes all signatures are present)
+                        final_tx = psbt.extract_transaction()
+                        final_tx_hex = final_tx.serialize().hex()
+
+                        # Broadcast using the Bitcoin service
+                        self.bitcoin_service.broadcast_transaction(final_tx_hex)
+                        QMessageBox.information(self, "PSBT Broadcast", "PSBT received via mesh and broadcasted to the Bitcoin network.")
+                    except Exception as e:
+                        QMessageBox.critical(self, "PSBT Error", f"Failed to decode or broadcast PSBT: {e}")
+                else:
+                    QMessageBox.warning(self, "No Node", "Received PSBT via mesh, but not connected to a Bitcoin node.")
+        except Exception as e:
+            print(f"Error handling mesh PSBT message: {e}")
+        

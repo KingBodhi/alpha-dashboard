@@ -47,6 +47,31 @@ class TransactionPage(QWidget):
                 self.on_transaction_broadcast, Qt.ConnectionType.QueuedConnection)
             self.bitcoin_service.transaction_error.connect(
                 self.on_transaction_error, Qt.ConnectionType.QueuedConnection)
+    def create_psbt_base64(self, recipient, amount, fee_rate, from_address):
+        """
+        Create a PSBT for the given transaction details and return it as a base64-encoded string.
+        Requires python-bitcointx or similar library.
+        """
+        try:
+            from bitcointx.wallet import CBitcoinSecret, P2WPKHBitcoinAddress
+            from bitcointx.core import lx, COIN, b2x
+            from bitcointx.core.psbt import PartiallySignedTransaction
+            import base64
+
+            # This is a placeholder for actual UTXO selection and PSBT construction.
+            # In a real implementation, you would gather UTXOs, construct the PSBT, and fill in details.
+            # For now, return a dummy base64 string for demonstration.
+
+            dummy_psbt = b"psbtplaceholder"
+            psbt_base64 = base64.b64encode(dummy_psbt).decode("utf-8")
+            return psbt_base64
+
+        except ImportError:
+            QMessageBox.warning(self, "Missing Dependency", "python-bitcointx is required for PSBT creation.")
+            return None
+        except Exception as e:
+            QMessageBox.critical(self, "PSBT Error", f"Failed to create PSBT: {e}")
+            return None
             print("✅ Transaction page connected to Bitcoin service")
     
     def set_bitcoin_core_wallet_addresses(self, wallet_addresses):
@@ -300,6 +325,12 @@ class TransactionPage(QWidget):
         
         # Transaction preview
         preview_group = QGroupBox("Transaction Preview")
+        # Mesh Send Button (only enabled if not connected to node)
+        self.mesh_send_button = QPushButton("Send via Mesh Network")
+        self.mesh_send_button.setStyleSheet("QPushButton { background-color: #1976D2; color: white; font-weight: bold; }")
+        self.mesh_send_button.clicked.connect(self.send_psbt_via_mesh)
+        self.mesh_send_button.setVisible(False)  # Will be shown/hidden based on node connection
+        button_layout.addWidget(self.mesh_send_button)
         preview_layout = QVBoxLayout()
         preview_group.setLayout(preview_layout)
         
@@ -643,6 +674,28 @@ class TransactionPage(QWidget):
         self.recipient_input.clear()
         self.amount_input.setValue(0)
         self.description_input.clear()
+    def send_psbt_via_mesh(self):
+        """Create a PSBT and send it via the Meshtastic mesh network with a custom prefix."""
+        recipient = self.recipient_input.text().strip()
+        amount = self.amount_input.value()
+        fee_rate = self.get_selected_fee_rate()
+        from_address = self.wallet_address
+
+        if not recipient or amount <= 0:
+            QMessageBox.warning(self, "Input Error", "Please enter a valid recipient address and amount.")
+            return
+
+        psbt_base64 = self.create_psbt_base64(recipient, amount, fee_rate, from_address)
+        if not psbt_base64:
+            return
+
+        try:
+            from services.meshtastic_service import MeshtasticService
+            custom_prefix = "APN_PSBT:"
+            MeshtasticService.iface.sendText(f"{custom_prefix}{psbt_base64}")
+            QMessageBox.information(self, "PSBT Sent", "PSBT has been sent via the mesh network.")
+        except Exception as e:
+            QMessageBox.critical(self, "Mesh Send Error", f"Failed to send PSBT via mesh: {e}")
         
         # Update history display
         self.update_transaction_history_display()

@@ -10,3 +10,4 @@ uvicorn
 fastapi
 python-bitcoinrpc
 psutil
+python-bitcointx
