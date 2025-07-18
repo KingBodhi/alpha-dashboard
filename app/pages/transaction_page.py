@@ -1,3 +1,10 @@
+import sys
+print("Python executable:", sys.executable)
+try:
+    import bitcointx
+    print("bitcointx import: SUCCESS")
+except Exception as e:
+    print("bitcointx import: FAILED", e)
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, 
     QTextEdit, QComboBox, QSpinBox, QDoubleSpinBox, QGroupBox, QFormLayout,
