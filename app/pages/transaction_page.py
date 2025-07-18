@@ -61,7 +61,8 @@ class TransactionPage(QWidget):
         """
         try:
             from bitcointx.wallet import CBitcoinSecret, P2WPKHBitcoinAddress
-            from bitcointx.core import lx, COIN, b2x
+            from bitcointx.core import lx, b2x
+            COIN = 100000000
             from bitcointx.core.psbt import PartiallySignedTransaction
             import base64
 
