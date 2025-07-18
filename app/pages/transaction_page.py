@@ -73,11 +73,13 @@ class TransactionPage(QWidget):
             psbt_base64 = base64.b64encode(dummy_psbt).decode("utf-8")
             return psbt_base64
 
-        except ImportError:
-            QMessageBox.warning(self, "Missing Dependency", "python-bitcointx is required for PSBT creation.")
+        except ImportError as e:
+            QMessageBox.warning(self, "Missing Dependency", f"python-bitcointx is required for PSBT creation.\n\nDetails: {e}")
             return None
         except Exception as e:
-            QMessageBox.critical(self, "PSBT Error", f"Failed to create PSBT: {e}")
+            import traceback
+            tb = traceback.format_exc()
+            QMessageBox.critical(self, "PSBT Error", f"Failed to create PSBT: {e}\n\nTraceback:\n{tb}")
             return None
             print("✅ Transaction page connected to Bitcoin service")
     
