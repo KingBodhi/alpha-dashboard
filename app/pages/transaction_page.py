@@ -329,7 +329,7 @@ class TransactionPage(QWidget):
         self.mesh_send_button = QPushButton("Send via Mesh Network")
         self.mesh_send_button.setStyleSheet("QPushButton { background-color: #1976D2; color: white; font-weight: bold; }")
         self.mesh_send_button.clicked.connect(self.send_psbt_via_mesh)
-        self.mesh_send_button.setVisible(False)  # Will be shown/hidden based on node connection
+        self.mesh_send_button.setVisible(True)  # Always show the mesh send button
         preview_layout = QVBoxLayout()
         preview_group.setLayout(preview_layout)
         
