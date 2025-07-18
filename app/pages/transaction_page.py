@@ -700,10 +700,18 @@ class TransactionPage(QWidget):
             return
 
         try:
+            import logging
             from services.meshtastic_service import MeshtasticService
+            logger = logging.getLogger("MeshtasticMeshSend")
             custom_prefix = "APN_PSBT:"
-            MeshtasticService.iface.sendText(f"{custom_prefix}{psbt_base64}")
-            QMessageBox.information(self, "PSBT Sent", "PSBT has been sent via the mesh network.")
+            logger.info(f"Attempting to broadcast PSBT via mesh: {custom_prefix}{psbt_base64}")
+            success = MeshtasticService.sendText(f"{custom_prefix}{psbt_base64}")
+            if success:
+                logger.info("Mesh broadcast successful.")
+                QMessageBox.information(self, "PSBT Sent", "PSBT has been sent via the mesh network.")
+            else:
+                logger.error("Mesh broadcast failed.")
+                QMessageBox.critical(self, "Mesh Send Error", "Failed to send PSBT via mesh network. Check logs for details.")
         except Exception as e:
             QMessageBox.critical(self, "Mesh Send Error", f"Failed to send PSBT via mesh: {e}")
         

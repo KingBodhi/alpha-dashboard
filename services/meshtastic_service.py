@@ -4,10 +4,27 @@ from PyQt6.QtCore import QObject, pyqtSignal
 import meshtastic.serial_interface
 from pubsub import pub
 
+import logging
+
 class MeshtasticService(QObject):
     new_message = pyqtSignal(str)
     update_nodes = pyqtSignal(dict)
     iface = None
+
+    @classmethod
+    def sendText(cls, text):
+        logger = logging.getLogger("MeshtasticService")
+        if cls.iface is None:
+            logger.error("Meshtastic iface not initialized. Cannot send message.")
+            return False
+        try:
+            logger.info(f"Broadcasting via mesh: {text}")
+            cls.iface.sendText(text)
+            logger.info("Broadcast successful.")
+            return True
+        except Exception as e:
+            logger.error(f"Broadcast failed: {e}")
+            return False
 
     def __init__(self):
         super().__init__()
