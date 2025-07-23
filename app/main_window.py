@@ -309,7 +309,13 @@ class MainWindow(QMainWindow):
                         self.bitcoin_service.broadcast_transaction(final_tx_hex)
                         QMessageBox.information(self, "PSBT Broadcast", "PSBT received via mesh and broadcasted to the Bitcoin network.")
                     except Exception as e:
-                        QMessageBox.critical(self, "PSBT Error", f"Failed to decode or broadcast PSBT: {e}")
+                        import logging
+                        logger = logging.getLogger("MeshPSBTReceiver")
+                        logger.error(f"Failed to decode or broadcast PSBT. Base64: {psbt_base64} Error: {e}")
+                        if psbt_base64 == "cHNidHBsYWNlaG9sZGVy":
+                            QMessageBox.critical(self, "PSBT Error", "Received a placeholder/dummy PSBT. The sender did not generate a real PSBT.")
+                        else:
+                            QMessageBox.critical(self, "PSBT Error", f"Failed to decode or broadcast PSBT: {e}")
                 else:
                     QMessageBox.warning(self, "No Node", "Received PSBT via mesh, but not connected to a Bitcoin node.")
         except Exception as e:

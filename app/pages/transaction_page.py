@@ -57,21 +57,73 @@ class TransactionPage(QWidget):
     def create_psbt_base64(self, recipient, amount, fee_rate, from_address):
         """
         Create a PSBT for the given transaction details and return it as a base64-encoded string.
-        Requires python-bitcointx or similar library.
+        Uses real wallet UTXOs via Bitcoin Core.
         """
         try:
-            from bitcointx.wallet import CBitcoinSecret, P2WPKHBitcoinAddress
-            from bitcointx.core import lx, b2x
-            COIN = 100000000
+            from bitcointx.wallet import P2WPKHBitcoinAddress
+            from bitcointx.core import COutPoint, CTxIn, CTxOut, CTransaction
             from bitcointx.core.psbt import PartiallySignedTransaction
             import base64
 
-            # This is a placeholder for actual UTXO selection and PSBT construction.
-            # In a real implementation, you would gather UTXOs, construct the PSBT, and fill in details.
-            # For now, return a dummy base64 string for demonstration.
+            COIN = 100000000
+            # Connect to wallet RPC
+            proxy = None
+            if hasattr(self.bitcoin_service, "rpc_url"):
+                from bitcoinrpc.authproxy import AuthServiceProxy
+                proxy = AuthServiceProxy(
+                    f"{self.bitcoin_service.rpc_url}/wallet/{self.bitcoin_service.wallet_name}",
+                    self.bitcoin_service.rpc_user,
+                    self.bitcoin_service.rpc_password
+                )
+            else:
+                raise RuntimeError("Bitcoin service RPC not available")
 
-            dummy_psbt = b"psbtplaceholder"
-            psbt_base64 = base64.b64encode(dummy_psbt).decode("utf-8")
+            # Fetch UTXOs
+            utxos = self.bitcoin_service._safe_rpc_call(lambda: proxy.listunspent())
+            if not utxos or len(utxos) == 0:
+                QMessageBox.warning(self, "No UTXOs", "No UTXOs available in wallet to fund transaction.")
+                return None
+
+            # Select UTXOs to cover amount + fee
+            target_value = int((amount + (fee_rate * 200 / 1e8)) * COIN)  # 200 vbytes estimate
+            selected_utxos = []
+            total_value = 0
+            for utxo in utxos:
+                selected_utxos.append(utxo)
+                total_value += int(utxo['amount'] * COIN)
+                if total_value >= target_value:
+                    break
+            if total_value < target_value:
+                QMessageBox.warning(self, "Insufficient Funds", "Not enough UTXOs to cover amount + fee.")
+                return None
+
+            # Build inputs
+            txins = []
+            for utxo in selected_utxos:
+                txid = utxo['txid']
+                vout = utxo['vout']
+                outpoint = COutPoint(bytes.fromhex(txid), vout)
+                txins.append(CTxIn(outpoint))
+
+            # Build outputs
+            txouts = []
+            recipient_addr = P2WPKHBitcoinAddress(recipient)
+            value = int(amount * COIN)
+            txouts.append(CTxOut(value, recipient_addr.to_scriptPubKey()))
+
+            # Add change output if needed
+            change = total_value - value - int(fee_rate * 200)
+            if change > 0:
+                change_addr = P2WPKHBitcoinAddress(from_address)
+                txouts.append(CTxOut(change, change_addr.to_scriptPubKey()))
+
+            # Create unsigned transaction
+            tx = CTransaction(txins, txouts)
+
+            # Create PSBT
+            psbt = PartiallySignedTransaction.from_tx(tx)
+            psbt_bytes = psbt.serialize()
+            psbt_base64 = base64.b64encode(psbt_bytes).decode("utf-8")
             return psbt_base64
 
         except ImportError as e:
