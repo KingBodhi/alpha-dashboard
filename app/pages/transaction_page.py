@@ -66,17 +66,10 @@ class TransactionPage(QWidget):
             import base64
 
             COIN = 100000000
-            # Connect to wallet RPC
-            proxy = None
-            if hasattr(self.bitcoin_service, "rpc_url"):
-                from bitcoinrpc.authproxy import AuthServiceProxy
-                proxy = AuthServiceProxy(
-                    f"{self.bitcoin_service.rpc_url}/wallet/{self.bitcoin_service.wallet_name}",
-                    self.bitcoin_service.rpc_user,
-                    self.bitcoin_service.rpc_password
-                )
-            else:
-                raise RuntimeError("Bitcoin service RPC not available")
+            # Use the shared Bitcoin Core RPC connection instance
+            if not hasattr(self.bitcoin_service, "rpc_connection") or self.bitcoin_service.rpc_connection is None:
+                raise RuntimeError("Bitcoin Core RPC connection not available")
+            proxy = self.bitcoin_service.rpc_connection
 
             # Fetch UTXOs
             utxos = self.bitcoin_service._safe_rpc_call(lambda: proxy.listunspent())
