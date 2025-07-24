@@ -62,7 +62,7 @@ class TransactionPage(QWidget):
         try:
             from bitcointx.wallet import P2WPKHBitcoinAddress
             from bitcointx.core import COutPoint, CTxIn, CTxOut, CTransaction
-            from bitcointx.core.psbt import PartiallySignedTransaction
+            from bitcointx.core.psbt import PartiallySignedBitcoinTransaction
             import base64
 
             COIN = 100000000
@@ -114,7 +114,7 @@ class TransactionPage(QWidget):
             tx = CTransaction(txins, txouts)
 
             # Create PSBT
-            psbt = PartiallySignedTransaction.from_tx(tx)
+            psbt = PartiallySignedBitcoinTransaction.from_transaction(tx)
             psbt_bytes = psbt.serialize()
             psbt_base64 = base64.b64encode(psbt_bytes).decode("utf-8")
             return psbt_base64
