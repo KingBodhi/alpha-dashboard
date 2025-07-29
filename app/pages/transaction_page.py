@@ -114,7 +114,7 @@ class TransactionPage(QWidget):
             tx = CTransaction(txins, txouts)
 
             # Create PSBT using current bitcointx API
-            psbt = PartiallySignedBitcoinTransaction.from_tx(tx)
+            psbt = PartiallySignedBitcoinTransaction(tx=tx)
             psbt_bytes = psbt.serialize()
             psbt_base64 = base64.b64encode(psbt_bytes).decode("utf-8")
             return psbt_base64
