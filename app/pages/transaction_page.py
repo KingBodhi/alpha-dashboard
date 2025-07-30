@@ -698,7 +698,7 @@ class TransactionPage(QWidget):
             return
 
         try:
-            utxos = self.bitcoin_service.get_utxos(from_address)
+            utxos = self.bitcoin_service.get_unspent_outputs(from_address)
             if not utxos:
                 QMessageBox.critical(self, "Error", "No UTXOs available for this address.")
                 return
