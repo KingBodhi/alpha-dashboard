@@ -24,30 +24,21 @@ class TransactionPage(QWidget):
     # Signal emitted when a transaction is created (for future blockchain integration)
     transaction_created = pyqtSignal(dict)
     
-    def __init__(self):
+    def __init__(self, bitcoin_service):
         super().__init__()
         self.transaction_history = []
-        self.bitcoin_service = None
+        self.bitcoin_service = bitcoin_service
         self.wallet_address = None
         self.wallet_balance = Decimal('0')
         self.wallet_addresses = {}
         self.wallet_loaded = False
         self.init_ui()
-        
-    def set_bitcoin_service(self, bitcoin_service):
-        """Set the Bitcoin service for blockchain integration."""
-        self.bitcoin_service = bitcoin_service
         if self.bitcoin_service:
-            # Use queued connections to prevent blocking
             from PyQt6.QtCore import Qt
-            
-            # Connect to balance updates
             self.bitcoin_service.address_balance_updated.connect(
                 self.update_wallet_balance, Qt.ConnectionType.QueuedConnection)
-            # Connect to transaction updates  
             self.bitcoin_service.address_transactions_updated.connect(
                 self.update_transaction_history_from_blockchain, Qt.ConnectionType.QueuedConnection)
-            # Connect to transaction creation signals
             self.bitcoin_service.transaction_created.connect(
                 self.on_transaction_created, Qt.ConnectionType.QueuedConnection)
             self.bitcoin_service.transaction_broadcasted.connect(
@@ -687,6 +678,9 @@ class TransactionPage(QWidget):
         self.description_input.clear()
     def send_psbt_via_mesh(self):
         """Create a PSBT and send it via the Meshtastic mesh network with a custom prefix."""
+        if not self.bitcoin_service:
+            self.logger.error("Bitcoin service is not available.")
+            return
         recipient = self.recipient_input.text().strip()
         amount = self.amount_input.value()
         fee_rate = self.get_selected_fee_rate()

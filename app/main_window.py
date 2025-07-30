@@ -38,7 +38,8 @@ class MainWindow(QMainWindow):
         # Profile page will get Bitcoin service after it's created
         self.profile_page = ProfilePage()
         self.bitcoin_page = BitcoinPage()
-        self.transaction_page = TransactionPage()
+        self.bitcoin_service = BitcoinService()
+        self.transaction_page = TransactionPage(self.bitcoin_service)
 
         self.stack.addWidget(self.home_page)
         self.stack.addWidget(self.apn_page)
@@ -57,7 +58,7 @@ class MainWindow(QMainWindow):
         self.service.update_nodes.connect(self.update_nodes_all)
 
         # Bitcoin Service
-        self.bitcoin_service = BitcoinService()
+        # self.bitcoin_service = BitcoinService()  # Already instantiated above
         self.setup_bitcoin_connections()
 
     def start_service(self):
@@ -114,7 +115,7 @@ class MainWindow(QMainWindow):
             profile_wallet.update_performance_status, Qt.ConnectionType.QueuedConnection)
         
         # Connect Bitcoin service to transaction page
-        self.transaction_page.set_bitcoin_service(self.bitcoin_service)
+        # self.transaction_page.set_bitcoin_service(self.bitcoin_service)  # No longer needed
         
         # Defer address operations to prevent blocking during startup
         QTimer.singleShot(100, self._setup_bitcoin_addresses)
