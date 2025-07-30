@@ -54,80 +54,36 @@ class TransactionPage(QWidget):
                 self.on_transaction_broadcast, Qt.ConnectionType.QueuedConnection)
             self.bitcoin_service.transaction_error.connect(
                 self.on_transaction_error, Qt.ConnectionType.QueuedConnection)
-    def create_psbt_base64(self, recipient, amount, fee_rate, from_address):
+    def create_psbt_base64(self, tx, utxos):
         """
-        Create a PSBT for the given transaction details and return it as a base64-encoded string.
-        Uses real wallet UTXOs via Bitcoin Core.
+        Create a PSBT from a CTransaction and a list of UTXOs, returning base64-encoded PSBT.
         """
         try:
-            from bitcointx.wallet import P2WPKHBitcoinAddress
-            from bitcointx.core import COutPoint, CTxIn, CTxOut, CTransaction
             from bitcointx.core.psbt import PartiallySignedBitcoinTransaction
-            import base64
+            psbt = PartiallySignedBitcoinTransaction()
+            psbt.set_unsigned_tx(tx)
 
-            COIN = 100000000
-            # Use the shared Bitcoin Core RPC connection instance
-            if not hasattr(self.bitcoin_service, "rpc_connection") or self.bitcoin_service.rpc_connection is None:
-                raise RuntimeError("Bitcoin Core RPC connection not available")
-            proxy = self.bitcoin_service.rpc_connection
+            for i, txin in enumerate(tx.vin):
+                # Find the matching UTXO for this input
+                utxo = next(
+                    (
+                        u
+                        for u in utxos
+                        if u.get("txid") == txin.prevout.hash[::-1].hex()
+                        and u.get("vout") == txin.prevout.n
+                    ),
+                    None,
+                )
+                if utxo is None:
+                    raise ValueError(
+                        f"UTXO not found for input {i}: txid={txin.prevout.hash[::-1].hex()}, vout={txin.prevout.n}"
+                    )
+                psbt.add_input(i, utxo=utxo)
 
-            # Fetch UTXOs
-            utxos = self.bitcoin_service._safe_rpc_call(lambda: proxy.listunspent())
-            if not utxos or len(utxos) == 0:
-                QMessageBox.warning(self, "No UTXOs", "No UTXOs available in wallet to fund transaction.")
-                return None
-
-            # Select UTXOs to cover amount + fee
-            target_value = int((amount + (fee_rate * 200 / 1e8)) * COIN)  # 200 vbytes estimate
-            selected_utxos = []
-            total_value = 0
-            for utxo in utxos:
-                selected_utxos.append(utxo)
-                total_value += int(utxo['amount'] * COIN)
-                if total_value >= target_value:
-                    break
-            if total_value < target_value:
-                QMessageBox.warning(self, "Insufficient Funds", "Not enough UTXOs to cover amount + fee.")
-                return None
-
-            # Build inputs
-            txins = []
-            for utxo in selected_utxos:
-                txid = utxo['txid']
-                vout = utxo['vout']
-                outpoint = COutPoint(bytes.fromhex(txid), vout)
-                txins.append(CTxIn(outpoint))
-
-            # Build outputs
-            txouts = []
-            recipient_addr = P2WPKHBitcoinAddress(recipient)
-            value = int(amount * COIN)
-            txouts.append(CTxOut(value, recipient_addr.to_scriptPubKey()))
-
-            # Add change output if needed
-            change = total_value - value - int(fee_rate * 200)
-            if change > 0:
-                change_addr = P2WPKHBitcoinAddress(from_address)
-                txouts.append(CTxOut(change, change_addr.to_scriptPubKey()))
-
-            # Create unsigned transaction
-            tx = CTransaction(txins, txouts)
-
-            # Create PSBT using current bitcointx API
-            psbt = PartiallySignedBitcoinTransaction(tx=tx)
-            psbt_bytes = psbt.serialize()
-            psbt_base64 = base64.b64encode(psbt_bytes).decode("utf-8")
-            return psbt_base64
-
-        except ImportError as e:
-            QMessageBox.warning(self, "Missing Dependency", f"python-bitcointx is required for PSBT creation.\n\nDetails: {e}")
-            return None
+            return psbt.to_base64()
         except Exception as e:
-            import traceback
-            tb = traceback.format_exc()
-            QMessageBox.critical(self, "PSBT Error", f"Failed to create PSBT: {e}\n\nTraceback:\n{tb}")
-            return None
-            print("✅ Transaction page connected to Bitcoin service")
+            self.logger.error(f"Failed to create PSBT: {e}")
+            return ""
     
     def set_bitcoin_core_wallet_addresses(self, wallet_addresses):
         """Set wallet addresses from Bitcoin Core wallet."""
