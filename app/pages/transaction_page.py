@@ -696,7 +696,66 @@ class TransactionPage(QWidget):
             QMessageBox.warning(self, "Input Error", "Please enter a valid recipient address and amount.")
             return
 
-        psbt_base64 = self.create_psbt_base64(recipient, amount, fee_rate, from_address)
+        # Fetch UTXOs for the sending address
+        if not self.bitcoin_service or not hasattr(self.bitcoin_service, "get_utxos"):
+            QMessageBox.critical(self, "Error", "Bitcoin service or UTXO fetch not available.")
+            return
+
+        try:
+            utxos = self.bitcoin_service.get_utxos(from_address)
+            if not utxos:
+                QMessageBox.critical(self, "Error", "No UTXOs available for this address.")
+                return
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to fetch UTXOs: {e}")
+            return
+
+        # Build the transaction using bitcointx
+        try:
+            from bitcointx.core import COutPoint, CTxIn, CTxOut, CTransaction, lx, COIN
+            from bitcointx.wallet import CBitcoinAddress
+
+            total_input = 0
+            inputs = []
+            selected_utxos = []
+            satoshis_needed = int((amount + 0.00001) * COIN)  # Add small buffer for fee
+
+            for utxo in utxos:
+                if utxo.get("spendable", True) is False:
+                    continue
+                txid = utxo["txid"]
+                vout = utxo["vout"]
+                value = int(float(utxo["amount"]) * COIN)
+                total_input += value
+                outpoint = COutPoint(lx(txid), vout)
+                inputs.append(CTxIn(outpoint))
+                selected_utxos.append(utxo)
+                if total_input >= satoshis_needed:
+                    break
+
+            if total_input < satoshis_needed:
+                QMessageBox.critical(self, "Error", "Insufficient UTXOs to fund transaction.")
+                return
+
+            # Outputs
+            outputs = []
+            recipient_addr = CBitcoinAddress(recipient)
+            outputs.append(CTxOut(int(amount * COIN), recipient_addr.to_scriptPubKey()))
+
+            # Change
+            change = total_input - int(amount * COIN)
+            if change > int(0.000005 * COIN):  # Don't create dust
+                change_addr = CBitcoinAddress(from_address)
+                outputs.append(CTxOut(change, change_addr.to_scriptPubKey()))
+
+            tx = CTransaction(inputs, outputs)
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to build transaction: {e}")
+            return
+
+        # Create PSBT base64
+        psbt_base64 = self.create_psbt_base64(tx, selected_utxos)
         if not psbt_base64:
             return
 
