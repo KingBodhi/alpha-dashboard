@@ -693,7 +693,7 @@ class TransactionPage(QWidget):
             return
 
         # Fetch UTXOs for the sending address
-        if not self.bitcoin_service or not hasattr(self.bitcoin_service, "get_utxos"):
+        if not self.bitcoin_service or not hasattr(self.bitcoin_service, "get_unspent_outputs"):
             QMessageBox.critical(self, "Error", "Bitcoin service or UTXO fetch not available.")
             return
 
