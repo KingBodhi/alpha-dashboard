@@ -708,8 +708,9 @@ class TransactionPage(QWidget):
 
         # Build the transaction using bitcointx
         try:
-            from bitcointx.core import COutPoint, CTxIn, CTxOut, CTransaction, lx, COIN
+            from bitcointx.core import COutPoint, CTxIn, CTxOut, CTransaction, lx
             from bitcointx.wallet import CBitcoinAddress
+            COIN = 100000000
 
             total_input = 0
             inputs = []
