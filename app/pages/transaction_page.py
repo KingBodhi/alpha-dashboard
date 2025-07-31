@@ -678,8 +678,7 @@ class TransactionPage(QWidget):
         self.description_input.clear()
     def send_psbt_via_mesh(self):
         """Create a PSBT and send it via the Meshtastic mesh network with a custom prefix."""
-        print("[DEBUG] self.bitcoin_service in send_psbt_via_mesh:", self.bitcoin_service, type(self.bitcoin_service))
-        print("[DEBUG] dir(self.bitcoin_service):", dir(self.bitcoin_service))
+        
         if not self.bitcoin_service:
             self.logger.error("Bitcoin service is not available.")
             return
@@ -698,7 +697,9 @@ class TransactionPage(QWidget):
             return
 
         try:
+            print("[DEBUG] Fetching UTXOs for address:", from_address)
             utxos = self.bitcoin_service.get_unspent_outputs(from_address)
+            print("[DEBUG] UTXOs returned:", utxos)
             if not utxos:
                 QMessageBox.critical(self, "Error", "No UTXOs available for this address.")
                 return
