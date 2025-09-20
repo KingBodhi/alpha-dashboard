@@ -2,38 +2,8 @@ import os
 import json
 from pathlib import Path
 from app.pages import globals
-# ====================================================
-# GLOBAL PATCH: Ensures RIPEMD160 is supported even
-# if the system OpenSSL lacks it.
-# ====================================================
-import hashlib
 
-_original_hashlib_new = hashlib.new
-
-def patched_hashlib_new(name, data=b'', **kwargs):
-    if name.lower() == 'ripemd160':
-        try:
-            # Try system first
-            return _original_hashlib_new(name, data, **kwargs)
-        except (ValueError, TypeError):
-            try:
-                from Crypto.Hash import RIPEMD160
-            except ImportError as e:
-                raise RuntimeError(
-                    "Your system lacks ripemd160 in OpenSSL and pycryptodome is not installed.\n"
-                    "Fix with:\n\n    pip install pycryptodome"
-                ) from e
-            h = RIPEMD160.new()
-            h.update(data)
-            return h
-    return _original_hashlib_new(name, data, **kwargs)
-
-hashlib.new = patched_hashlib_new
-
-# ====================================================
-# Safe to import bit now
-# ====================================================
-from bit import Key
+# Simplified profile without Bitcoin dependencies for now
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QLineEdit, QPushButton, QMessageBox,
@@ -43,8 +13,6 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QGuiApplication
-
-import qrcode
 
 PROFILE_DIR = Path.home() / ".alpha_protocol_network"
 PROFILE_PATH = PROFILE_DIR / "profile.json"
@@ -59,8 +27,9 @@ class ProfilePage(QWidget):
         else:
             QMessageBox.warning(self, "Not Ready", "APN URL is not yet available.")
 
-    def __init__(self):
+    def __init__(self, config=None):
         super().__init__()
+        self.config = config
 
         self.devices = []
 
@@ -73,12 +42,13 @@ class ProfilePage(QWidget):
         title.setStyleSheet("font-size: 18px; font-weight: bold;")
         self.layout.addWidget(title)
 
-        self.address_label = QLabel("Bitcoin Address: (loading...)")
+        if self.config:
+            node_id = self.config.identity.node_id
+            self.address_label = QLabel(f"Node ID: {node_id}")
+        else:
+            self.address_label = QLabel("Node ID: (not configured)")
         self.address_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.layout.addWidget(self.address_label)
-
-        self.qr_label = QLabel()
-        self.layout.addWidget(self.qr_label, alignment=Qt.AlignmentFlag.AlignHCenter)
 
         self.layout.addWidget(QLabel("Nickname:"))
         self.nickname_input = QLineEdit()
@@ -137,25 +107,18 @@ class ProfilePage(QWidget):
             with open(PROFILE_PATH, "r") as f:
                 data = json.load(f)
         else:
-            key = Key()
             data = {
-                "private_key": key.to_wif(),
-                "address": key.address,
                 "nickname": "AlphaNode",
-                "role": "Standard",
+                "role": "Standard", 
                 "devices": []
             }
             with open(PROFILE_PATH, "w") as f:
                 json.dump(data, f, indent=4)
 
-        self.private_key = data["private_key"]
-        self.address = data["address"]
         self.nickname_input.setText(data.get("nickname", ""))
         self.role_select.setCurrentText(data.get("role", "Standard"))
         self.devices = data.get("devices", [])
 
-        self.address_label.setText(f"Bitcoin Address:\n{self.address}")
-        self.generate_qr_code(self.address)
         self.refresh_device_list()
 
     def save_profile(self):
@@ -167,8 +130,6 @@ class ProfilePage(QWidget):
             return
 
         data = {
-            "private_key": self.private_key,
-            "address": self.address,
             "nickname": nickname,
             "role": role,
             "devices": self.devices
@@ -179,17 +140,7 @@ class ProfilePage(QWidget):
 
         self.show_message("Profile Saved", "Your profile has been updated successfully!")
 
-    def generate_qr_code(self, text):
-        qr = qrcode.QRCode(box_size=4, border=2)
-        qr.add_data(text)
-        qr.make(fit=True)
-        img = qr.make_image(fill_color="black", back_color="white")
-
-        img_path = PROFILE_DIR / "address_qr.png"
-        img.save(img_path)
-
-        pixmap = QPixmap(str(img_path))
-        self.qr_label.setPixmap(pixmap)
+    # QR code generation removed for now
 
     def refresh_device_list(self):
         self.device_list.clear()

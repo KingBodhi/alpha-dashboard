@@ -15,8 +15,9 @@ CONFIG_PATH = CONFIG_DIR / "node_config.json"
 PROFILE_PATH = Path.home() / ".alpha_protocol_network" / "profile.json"
 
 class APNPage(QWidget):
-    def __init__(self):
+    def __init__(self, config=None):
         super().__init__()
+        self.apn_config = config
         self.setWindowTitle("Alpha Protocol Network Control Panel")
 
         self.payment_address = self.load_payment_address()

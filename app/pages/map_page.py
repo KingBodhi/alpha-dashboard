@@ -5,8 +5,9 @@ from PyQt6.QtWebEngineCore import QWebEngineSettings
 from PyQt6.QtCore import QUrl
 
 class MapPage(QWidget):
-    def __init__(self):
+    def __init__(self, config=None):
         super().__init__()
+        self.config = config
         layout = QVBoxLayout()
         self.setLayout(layout)
 

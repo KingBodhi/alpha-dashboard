@@ -3,8 +3,9 @@ from app.widgets.network_summary import NetworkSummary
 from app.widgets.block_tracker import BlockTracker
 
 class NodesPage(QWidget):
-    def __init__(self):
+    def __init__(self, config=None):
         super().__init__()
+        self.config = config
         layout = QVBoxLayout()
         self.setLayout(layout)
 
